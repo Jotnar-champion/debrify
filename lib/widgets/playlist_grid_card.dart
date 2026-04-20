@@ -21,6 +21,8 @@ class PlaylistGridCard extends StatefulWidget {
   final VoidCallback onDelete;
   final VoidCallback? onClearProgress;
   final VoidCallback? onToggleFavorite;
+  final VoidCallback? onRename;
+  final VoidCallback? onAssignCategory;
   final bool autofocus;
   final void Function(bool focused)? onFocusChanged;
   final FocusNode? focusNode; // External focus node for parent control
@@ -39,6 +41,8 @@ class PlaylistGridCard extends StatefulWidget {
     required this.onDelete,
     this.onClearProgress,
     this.onToggleFavorite,
+    this.onRename,
+    this.onAssignCategory,
     this.autofocus = false,
     this.onFocusChanged,
     this.focusNode,
@@ -103,6 +107,18 @@ class _PlaylistGridCardState extends State<PlaylistGridCard> {
                 widget.onClearProgress?.call();
               }
             : null,
+        onRename: widget.onRename != null
+            ? () {
+                Navigator.pop(context);
+                widget.onRename?.call();
+              }
+            : null,
+        onAssignCategory: widget.onAssignCategory != null
+            ? () {
+                Navigator.pop(context);
+                widget.onAssignCategory?.call();
+              }
+            : null,
         onDelete: () {
           Navigator.pop(context);
           widget.onDelete();
@@ -138,6 +154,12 @@ class _PlaylistGridCardState extends State<PlaylistGridCard> {
     final title = widget.item['title'] as String? ?? 'Untitled';
     final posterUrl = widget.item['posterUrl'] as String?;
     final provider = widget.item['provider'] as String?;
+    final kind = widget.item['kind'] as String?;
+    final addedAt = widget.item['addedAt'] as int?;
+    final isNew = addedAt != null &&
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(addedAt)).inHours < 24 &&
+        widget.progressData == null;
+    final isCollection = kind == 'collection';
 
     // Calculate progress if available
     double? progress;
@@ -340,6 +362,58 @@ class _PlaylistGridCardState extends State<PlaylistGridCard> {
                         ),
                       ),
 
+                    // NEW badge (top right, below star or alone)
+                    if (isNew)
+                      Positioned(
+                        top: widget.isFavorited ? 42 : 8,
+                        right: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF10B981),
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                          child: const Text(
+                            'NEW',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                      ),
+
+                    // Collection / Single badge (below provider)
+                    if (isCollection)
+                      Positioned(
+                        top: 32,
+                        left: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.6),
+                            borderRadius: BorderRadius.circular(5),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.folder_rounded, size: 10, color: Colors.white70),
+                              SizedBox(width: 3),
+                              Text(
+                                'Series',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
                     // Progress indicator (bottom) with modern style
                     if (progress != null && progress > 0 && progress < 1.0)
                       Positioned(
@@ -538,6 +612,8 @@ class _PlaylistActionSheet extends StatefulWidget {
   final VoidCallback onView;
   final VoidCallback? onToggleFavorite;
   final VoidCallback? onClearProgress;
+  final VoidCallback? onRename;
+  final VoidCallback? onAssignCategory;
   final VoidCallback onDelete;
 
   const _PlaylistActionSheet({
@@ -551,6 +627,8 @@ class _PlaylistActionSheet extends StatefulWidget {
     required this.onView,
     this.onToggleFavorite,
     this.onClearProgress,
+    this.onRename,
+    this.onAssignCategory,
     required this.onDelete,
   });
 
@@ -601,6 +679,8 @@ class _PlaylistActionSheetState extends State<_PlaylistActionSheet>
     int count = 2; // Play + View Files (always present)
     if (widget.hasFavoriteToggle) count++;
     if (widget.hasProgress) count++;
+    if (widget.onRename != null) count++;
+    if (widget.onAssignCategory != null) count++;
     count++; // Delete (always present)
 
     for (int i = 0; i < count; i++) {
@@ -811,6 +891,22 @@ class _PlaylistActionSheetState extends State<_PlaylistActionSheet>
               label: 'Clear Progress',
               focusNode: _focusNodes[index++],
               onTap: widget.onClearProgress!,
+            ),
+          // Rename
+          if (widget.onRename != null)
+            _GlassButton(
+              icon: Icons.edit_outlined,
+              label: 'Rename',
+              focusNode: _focusNodes[index++],
+              onTap: widget.onRename!,
+            ),
+          // Assign Category
+          if (widget.onAssignCategory != null)
+            _GlassButton(
+              icon: Icons.category_outlined,
+              label: 'Category',
+              focusNode: _focusNodes[index++],
+              onTap: widget.onAssignCategory!,
             ),
           // Delete
           _GlassButton(
