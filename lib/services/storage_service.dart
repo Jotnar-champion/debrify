@@ -3850,6 +3850,286 @@ class StorageService {
       );
     }
   }
+
+  // ============================================================================
+  // Theme Preference (dark / amoled / light)
+  // ============================================================================
+  static const String _themePreferenceKey = 'app_theme_preference';
+
+  static Future<String> getThemePreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_themePreferenceKey) ?? 'dark';
+  }
+
+  static Future<void> setThemePreference(String theme) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_themePreferenceKey, theme);
+  }
+
+  // ============================================================================
+  // Playlist Sort Preference
+  // ============================================================================
+  static const String _playlistSortKey = 'playlist_sort_preference';
+
+  /// Get playlist sort mode: 'recent' (default), 'lastPlayed', 'az', 'za', 'provider', 'kind', 'progress'
+  static Future<String> getPlaylistSortPreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_playlistSortKey) ?? 'recent';
+  }
+
+  static Future<void> setPlaylistSortPreference(String sort) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_playlistSortKey, sort);
+  }
+
+  // ============================================================================
+  // Playlist Item Renaming
+  // ============================================================================
+
+  /// Rename a playlist item by dedupe key
+  static Future<bool> renamePlaylistItem(String dedupeKey, String newTitle) async {
+    final items = await getPlaylistItemsRaw();
+    final index = items.indexWhere((e) => computePlaylistDedupeKey(e) == dedupeKey);
+    if (index == -1) return false;
+    items[index]['title'] = newTitle;
+    items[index]['customTitle'] = true; // Mark as user-renamed
+    await savePlaylistItemsRaw(items);
+    return true;
+  }
+
+  // ============================================================================
+  // Playlist Categories / Tags
+  // ============================================================================
+  static const String _playlistCategoriesKey = 'playlist_categories_v1';
+  static const String _playlistItemCategoriesKey = 'playlist_item_categories_v1';
+
+  /// Get all user-created categories
+  static Future<List<String>> getPlaylistCategories() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_playlistCategoriesKey);
+    if (raw == null) return <String>[];
+    try {
+      return (jsonDecode(raw) as List).cast<String>();
+    } catch (_) {
+      return <String>[];
+    }
+  }
+
+  /// Save categories list
+  static Future<void> savePlaylistCategories(List<String> categories) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_playlistCategoriesKey, jsonEncode(categories));
+  }
+
+  /// Add a new category
+  static Future<void> addPlaylistCategory(String category) async {
+    final categories = await getPlaylistCategories();
+    if (!categories.contains(category)) {
+      categories.add(category);
+      await savePlaylistCategories(categories);
+    }
+  }
+
+  /// Remove a category
+  static Future<void> removePlaylistCategory(String category) async {
+    final categories = await getPlaylistCategories();
+    categories.remove(category);
+    await savePlaylistCategories(categories);
+    // Also remove from all items
+    final itemCategories = await _getItemCategoriesMap();
+    itemCategories.removeWhere((_, cats) => true); // Will re-add without removed cat
+    // Actually just clean up: remove the category from each item's list
+    final cleaned = <String, List<String>>{};
+    for (final entry in itemCategories.entries) {
+      final cats = entry.value.where((c) => c != category).toList();
+      if (cats.isNotEmpty) cleaned[entry.key] = cats;
+    }
+    await _saveItemCategoriesMap(cleaned);
+  }
+
+  static Future<Map<String, List<String>>> _getItemCategoriesMap() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_playlistItemCategoriesKey);
+    if (raw == null) return {};
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      return decoded.map((k, v) => MapEntry(k, (v as List).cast<String>()));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Future<void> _saveItemCategoriesMap(Map<String, List<String>> map) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_playlistItemCategoriesKey, jsonEncode(map));
+  }
+
+  /// Get categories for a playlist item
+  static Future<List<String>> getItemCategories(String dedupeKey) async {
+    final map = await _getItemCategoriesMap();
+    return map[dedupeKey] ?? [];
+  }
+
+  /// Set categories for a playlist item
+  static Future<void> setItemCategories(String dedupeKey, List<String> categories) async {
+    final map = await _getItemCategoriesMap();
+    if (categories.isEmpty) {
+      map.remove(dedupeKey);
+    } else {
+      map[dedupeKey] = categories;
+    }
+    await _saveItemCategoriesMap(map);
+  }
+
+  // ============================================================================
+  // Watch History
+  // ============================================================================
+  static const String _watchHistoryKey = 'watch_history_v1';
+
+  /// Add entry to watch history
+  static Future<void> addWatchHistoryEntry({
+    required String title,
+    required String provider,
+    String? posterUrl,
+    String? dedupeKey,
+    String? kind,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_watchHistoryKey);
+    List<Map<String, dynamic>> history = [];
+    if (raw != null) {
+      try {
+        history = (jsonDecode(raw) as List).cast<Map<String, dynamic>>().toList();
+      } catch (_) {}
+    }
+    // Remove duplicate if exists (by dedupeKey or title)
+    history.removeWhere((e) =>
+        (dedupeKey != null && e['dedupeKey'] == dedupeKey) ||
+        (dedupeKey == null && e['title'] == title));
+    history.insert(0, {
+      'title': title,
+      'provider': provider,
+      'posterUrl': posterUrl,
+      'dedupeKey': dedupeKey,
+      'kind': kind,
+      'watchedAt': DateTime.now().millisecondsSinceEpoch,
+    });
+    // Keep only last 200 entries
+    if (history.length > 200) history = history.sublist(0, 200);
+    await prefs.setString(_watchHistoryKey, jsonEncode(history));
+  }
+
+  /// Get watch history
+  static Future<List<Map<String, dynamic>>> getWatchHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_watchHistoryKey);
+    if (raw == null) return [];
+    try {
+      return (jsonDecode(raw) as List).cast<Map<String, dynamic>>().toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Clear watch history
+  static Future<void> clearWatchHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_watchHistoryKey);
+  }
+
+  /// Remove single entry from watch history
+  static Future<void> removeWatchHistoryEntry(int index) async {
+    final history = await getWatchHistory();
+    if (index >= 0 && index < history.length) {
+      history.removeAt(index);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_watchHistoryKey, jsonEncode(history));
+    }
+  }
+
+  // ============================================================================
+  // Continue Watching - Items with partial progress
+  // ============================================================================
+
+  /// Get playlist items that have partial progress (for "Continue Watching" section)
+  /// Returns items sorted by most recently played first
+  static Future<List<Map<String, dynamic>>> getContinueWatchingItems() async {
+    final items = await getPlaylistItemsRaw();
+    final progressMap = await buildPlaylistProgressMap(items);
+
+    final continueItems = <Map<String, dynamic>>[];
+    for (final item in items) {
+      final dedupeKey = computePlaylistDedupeKey(item);
+      final progress = progressMap[dedupeKey];
+      if (progress == null) continue;
+
+      final positionMs = progress['positionMs'] as int? ?? 0;
+      final durationMs = progress['durationMs'] as int? ?? 0;
+      if (durationMs <= 0 || positionMs <= 0) continue;
+
+      final percent = positionMs / durationMs;
+      // Include if between 2% and 95% (not just started, not finished)
+      if (percent > 0.02 && percent < 0.95) {
+        // Also include series with partial episode progress
+        continueItems.add({
+          ...item,
+          '_progressPercent': percent,
+          '_progressPositionMs': positionMs,
+          '_progressDurationMs': durationMs,
+          '_progressUpdatedAt': progress['updatedAt'] ?? item['lastPlayedAt'] ?? 0,
+        });
+      }
+    }
+
+    // Sort by most recently played
+    continueItems.sort((a, b) {
+      final aTime = a['_progressUpdatedAt'] as int? ?? a['lastPlayedAt'] as int? ?? 0;
+      final bTime = b['_progressUpdatedAt'] as int? ?? b['lastPlayedAt'] as int? ?? 0;
+      return bTime.compareTo(aTime);
+    });
+
+    return continueItems;
+  }
+
+  // ============================================================================
+  // Link Health Check (dead link detection)
+  // ============================================================================
+
+  /// Check if a Real-Debrid restricted link is still valid
+  static Future<bool> checkRdLinkHealth(String restrictedLink, String apiKey) async {
+    try {
+      final response = await http.head(
+        Uri.parse(restrictedLink),
+      );
+      return response.statusCode == 200 || response.statusCode == 206 || response.statusCode == 302;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Check health of all playlist items (returns list of dead item dedupe keys)
+  static Future<List<String>> checkPlaylistHealth() async {
+    final items = await getPlaylistItemsRaw();
+    final apiKey = await getApiKey();
+    final deadKeys = <String>[];
+
+    for (final item in items) {
+      final provider = (item['provider'] as String? ?? 'realdebrid').toLowerCase();
+      final restrictedLink = item['restrictedLink'] as String?;
+
+      // Only check RD single-file links (collections need re-unrestriction)
+      if (provider == 'realdebrid' &&
+          restrictedLink != null &&
+          restrictedLink.isNotEmpty &&
+          apiKey != null) {
+        final isAlive = await checkRdLinkHealth(restrictedLink, apiKey);
+        if (!isAlive) {
+          deadKeys.add(computePlaylistDedupeKey(item));
+        }
+      }
+    }
+    return deadKeys;
+  }
 }
 
 class ApiKeyValidator {
