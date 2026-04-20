@@ -613,7 +613,7 @@ class _SettingsLayout extends StatelessWidget {
                     : ThemeService.instance.currentTheme == 'amoled'
                         ? 'AMOLED Black'
                         : 'Light',
-                onTap: () => _showThemePicker(context),
+                onTap: () async => _showThemePicker(context),
               ),
               _SettingsTile(
                 icon: Icons.history_rounded,
@@ -630,7 +630,7 @@ class _SettingsLayout extends StatelessWidget {
                   icon: Icons.keyboard_rounded,
                   title: 'Keyboard Shortcuts',
                   subtitle: 'View all available shortcuts',
-                  onTap: () => KeyboardShortcutsOverlay.show(context),
+                  onTap: () async => KeyboardShortcutsOverlay.show(context),
                 ),
             ],
           ),
@@ -705,7 +705,7 @@ class _SettingsLayout extends StatelessWidget {
                 icon: Icons.health_and_safety_rounded,
                 title: 'Check Playlist Link Health',
                 subtitle: 'Find and remove dead or expired links',
-                onTap: () => _showLinkHealthCheck(context),
+                onTap: () async => _showLinkHealthCheck(context),
               ),
             ],
           ),
