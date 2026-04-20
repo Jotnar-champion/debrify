@@ -20,6 +20,8 @@ class AdaptivePlaylistSection extends StatefulWidget {
   final void Function(Map<String, dynamic> item) onItemDelete;
   final void Function(Map<String, dynamic> item)? onItemClearProgress;
   final void Function(Map<String, dynamic> item)? onItemToggleFavorite;
+  final void Function(Map<String, dynamic> item)? onItemRename;
+  final void Function(Map<String, dynamic> item)? onItemAssignCategory;
   final bool shouldAutofocusFirst;
   final int? targetFocusIndex;
   final bool shouldRestoreFocus;
@@ -42,6 +44,8 @@ class AdaptivePlaylistSection extends StatefulWidget {
     required this.onItemDelete,
     this.onItemClearProgress,
     this.onItemToggleFavorite,
+    this.onItemRename,
+    this.onItemAssignCategory,
     this.shouldAutofocusFirst = false,
     this.targetFocusIndex,
     this.shouldRestoreFocus = false,
@@ -387,6 +391,8 @@ String _getDedupeKey(Map<String, dynamic> item) {
         onDelete: () => widget.onItemDelete(item),
         onClearProgress: widget.onItemClearProgress != null ? () => widget.onItemClearProgress!(item) : null,
         onToggleFavorite: widget.onItemToggleFavorite != null ? () => widget.onItemToggleFavorite!(item) : null,
+        onRename: widget.onItemRename != null ? () => widget.onItemRename!(item) : null,
+        onAssignCategory: widget.onItemAssignCategory != null ? () => widget.onItemAssignCategory!(item) : null,
         autofocus: shouldAutofocus,
         focusNode: focusNode,
         onUpArrowPressed: widget.onUpArrowPressed,
