@@ -43,6 +43,9 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   final ValueNotifier<String> _searchQuery = ValueNotifier<String>('');
   Timer? _searchDebouncer;
 
+  // Scroll position preservation
+  final ScrollController _playlistScrollController = ScrollController();
+
   // Favorites state
   Set<String> _favoriteKeys = {};
 
@@ -112,6 +115,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     _searchFocusNode.dispose();
     _searchQuery.dispose();
     _searchDebouncer?.cancel();
+    _playlistScrollController.dispose();
     super.dispose();
   }
 
@@ -1820,6 +1824,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                   backgroundColor: const Color(0xFF1E293B),
                   color: const Color(0xFF6366F1),
                   child: CustomScrollView(
+                    controller: _playlistScrollController,
                     physics: const AlwaysScrollableScrollPhysics(
                       parent: BouncingScrollPhysics(),
                     ),
