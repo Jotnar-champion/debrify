@@ -295,7 +295,13 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     // Track when user plays this item
     await StorageService.updatePlaylistItemLastPlayed(item);
     // Record in watch history
-    await StorageService.addWatchHistoryEntry(item);
+    await StorageService.addWatchHistoryEntry(
+      title: (item['title'] as String?) ?? 'Video',
+      provider: (item['provider'] as String?) ?? 'realdebrid',
+      posterUrl: item['posterUrl'] as String?,
+      dedupeKey: StorageService.computePlaylistDedupeKey(item),
+      kind: item['kind'] as String?,
+    );
 
     final String title = (item['title'] as String?) ?? 'Video';
     final String provider =
@@ -2259,132 +2265,164 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _buildSortButton() {
-    const sortOptions = {
-      'recent': 'Recently Added',
-      'lastPlayed': 'Last Played',
-      'az': 'A → Z',
-      'za': 'Z → A',
-      'provider': 'Provider',
-      'kind': 'Type',
-      'progress': 'Progress',
-    };
+  Widget _buildSearchButton(String currentQuery) {
+    final hasActiveSearch = currentQuery.isNotEmpty;
 
-    return PopupMenuButton<String>(
-      onSelected: (value) async {
-        await StorageService.setPlaylistSortPreference(value);
-        setState(() => _sortMode = value);
+    return Focus(
+      focusNode: _searchFocusNode,
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent) {
+          if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+            if (_favoritesSectionKey.currentState != null &&
+                _favoritesSectionKey.currentState!.hasItems) {
+              if (_favoritesSectionKey.currentState!.requestFocusOnLastItem()) {
+                return KeyEventResult.handled;
+              }
+            }
+            if (_allItemsSectionKey.currentState != null &&
+                _allItemsSectionKey.currentState!.hasItems) {
+              if (_allItemsSectionKey.currentState!.requestFocusOnLastItem()) {
+                return KeyEventResult.handled;
+              }
+            }
+            if (MainPageBridge.focusTvSidebar != null) {
+              MainPageBridge.focusTvSidebar!();
+              return KeyEventResult.handled;
+            }
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+            if (_favoritesSectionKey.currentState != null &&
+                _favoritesSectionKey.currentState!.hasItems) {
+              if (_favoritesSectionKey.currentState!.requestFocusOnFirstItem()) {
+                return KeyEventResult.handled;
+              }
+            }
+            if (_allItemsSectionKey.currentState != null &&
+                _allItemsSectionKey.currentState!.hasItems) {
+              if (_allItemsSectionKey.currentState!.requestFocusOnFirstItem()) {
+                return KeyEventResult.handled;
+              }
+            }
+          }
+          if (event.logicalKey == LogicalKeyboardKey.select ||
+              event.logicalKey == LogicalKeyboardKey.enter) {
+            _showSearchDialog();
+            return KeyEventResult.handled;
+          }
+        }
+        return KeyEventResult.ignored;
       },
-      offset: const Offset(0, 40),
-      color: const Color(0xFF1E293B),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: Colors.white.withOpacity(0.08)),
-      ),
-      itemBuilder: (ctx) => sortOptions.entries
-          .map((e) => PopupMenuItem<String>(
-                value: e.key,
-                child: Row(
-                  children: [
-                    if (_sortMode == e.key)
-                      const Icon(Icons.check, size: 16, color: Color(0xFF6366F1))
-                    else
-                      const SizedBox(width: 16),
-                    const SizedBox(width: 8),
-                    Text(e.value, style: const TextStyle(color: Colors.white, fontSize: 14)),
-                  ],
-                ),
-              ))
-          .toList(),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.06),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: Colors.white.withOpacity(0.08)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.sort, color: Colors.white70, size: 18),
-            const SizedBox(width: 6),
-            Text(
-              sortOptions[_sortMode] ?? 'Sort',
-              style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHistoryButton() {
-    return GestureDetector(
-      onTap: () {
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => const WatchHistoryScreen()),
-        );
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.06),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: Colors.white.withOpacity(0.08)),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.history, color: Colors.white70, size: 18),
-            SizedBox(width: 6),
-            Text('History', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Show search dialog
-  void _showSearchDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => _SearchDialog(
-        initialQuery: _searchController.text,
-        onSearch: (query) {
-          _searchController.text = query;
-          _searchQuery.value = query.toLowerCase().trim();
-        },
-        onClear: () {
-          _searchController.clear();
-          _searchQuery.value = '';
-        },
-      ),
-    );
-  }
-
-  // ─── Category Management ───
-
-  Widget _buildCategoryChips() {
-    if (_categories.isEmpty) return const SizedBox.shrink();
-    return SizedBox(
-      height: 38,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        children: [
-          _categoryChip('All', null),
-          for (final cat in _categories) _categoryChip(cat, cat),
-          const SizedBox(width: 4),
-          GestureDetector(
-            onTap: _showManageCategoriesDialog,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.06),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white.withOpacity(0.1)),
+      child: Builder(
+        builder: (context) {
+          final isFocused = Focus.of(context).hasFocus;
+          return GestureDetector(
+            onTap: _showSearchDialog,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding: EdgeInsets.symmetric(
+                horizontal: hasActiveSearch ? 12 : 10,
+                vertical: 10,
               ),
-              child: const Icon(Icons.settings, color: Colors.white38, size: 16),
+              decoration: BoxDecoration(
+                color: hasActiveSearch
+                    ? const Color(0xFF6366F1).withOpacity(0.2)
+                    : const Color(0xFF1E293B).withOpacity(0.9),
+                borderRadius: BorderRadius.circular(hasActiveSearch ? 20 : 12),
+                border: Border.all(
+                  color: isFocused
+                      ? const Color(0xFF6366F1)
+                      : hasActiveSearch
+                          ? const Color(0xFF6366F1).withOpacity(0.5)
+                          : Colors.white.withOpacity(0.1),
+                  width: isFocused ? 2 : 1,
+                ),
+                boxShadow: isFocused ? [
+                  BoxShadow(
+                    color: const Color(0xFF6366F1).withOpacity(0.3),
+                    blurRadius: 12,
+                    spreadRadius: 1,
+                  ),
+                ] : null,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.search_rounded,
+                    color: hasActiveSearch
+                        ? const Color(0xFF6366F1)
+                        : Colors.white.withOpacity(0.7),
+                    size: 20,
+                  ),
+                  if (hasActiveSearch) ...[
+                    const SizedBox(width: 8),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 120),
+                      child: Text(
+                        currentQuery,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    GestureDetector(
+                      onTap: () {
+                        _searchController.clear();
+                        _searchQuery.value = '';
+                      },
+                      child: Icon(
+                        Icons.close_rounded,
+                        color: Colors.white.withOpacity(0.6),
+                        size: 16,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B).withOpacity(0.5),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.video_library_outlined,
+              size: 56,
+              color: Colors.white.withOpacity(0.3),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            'No items in playlist',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.6),
+              fontSize: 17,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Add items from your debrid downloads',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.35),
+              fontSize: 14,
             ),
           ),
         ],
@@ -2392,246 +2430,178 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _categoryChip(String label, String? value) {
-    final selected = _selectedCategory == value;
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: GestureDetector(
-        onTap: () => setState(() => _selectedCategory = value),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          decoration: BoxDecoration(
-            color: selected ? const Color(0xFF6366F1) : Colors.white.withOpacity(0.06),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: selected ? const Color(0xFF6366F1) : Colors.white.withOpacity(0.08),
+  Widget _buildNoResultsState(String query) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E293B).withOpacity(0.5),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.search_off_rounded,
+              size: 56,
+              color: Colors.white.withOpacity(0.3),
             ),
           ),
-          child: Text(
-            label,
+          const SizedBox(height: 20),
+          Text(
+            'No results found',
             style: TextStyle(
-              color: selected ? Colors.white : Colors.white70,
-              fontSize: 13,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+              color: Colors.white.withOpacity(0.6),
+              fontSize: 17,
+              fontWeight: FontWeight.w500,
             ),
           ),
-        ),
+          const SizedBox(height: 8),
+          Text(
+            'Try searching for "$query" differently',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.35),
+              fontSize: 14,
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Future<void> _showManageCategoriesDialog() async {
-    final controller = TextEditingController();
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          backgroundColor: const Color(0xFF1E293B),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Manage Categories', style: TextStyle(color: Colors.white)),
-          content: SizedBox(
-            width: 300,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: controller,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          hintText: 'New category...',
-                          hintStyle: TextStyle(color: Colors.white.withOpacity(0.4)),
-                          isDense: true,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    IconButton(
-                      icon: const Icon(Icons.add_circle, color: Color(0xFF6366F1)),
-                      onPressed: () async {
-                        final name = controller.text.trim();
-                        if (name.isNotEmpty && !_categories.contains(name)) {
-                          await StorageService.addPlaylistCategory(name);
-                          controller.clear();
-                          final cats = await StorageService.getPlaylistCategories();
-                          setDialogState(() {});
-                          setState(() => _categories = cats);
-                        }
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 200),
-                  child: ListView(
-                    shrinkWrap: true,
-                    children: [
-                      for (final cat in _categories)
-                        ListTile(
-                          dense: true,
-                          title: Text(cat, style: const TextStyle(color: Colors.white)),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
-                            onPressed: () async {
-                              await StorageService.removePlaylistCategory(cat);
-                              final cats = await StorageService.getPlaylistCategories();
-                              setDialogState(() {});
-                              setState(() {
-                                _categories = cats;
-                                if (_selectedCategory == cat) _selectedCategory = null;
-                              });
-                            },
-                          ),
-                        ),
-                      if (_categories.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.all(16),
-                          child: Text('No categories yet', style: TextStyle(color: Colors.white38)),
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Done'),
-            ),
-          ],
+  Future<void> _viewItem(Map<String, dynamic> item) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => PlaylistContentViewScreen(
+          playlistItem: item,
+          onPlaybackStarted: () => Navigator.of(context).pop(),
         ),
       ),
     );
-    controller.dispose();
+    await _refresh();
   }
 
-  Future<void> _showAssignCategoryDialog(Map<String, dynamic> item) async {
-    final dedupeKey = StorageService.computePlaylistDedupeKey(item);
-    var assigned = List<String>.from(_itemCategoriesMap[dedupeKey] ?? []);
+  Future<void> _removeItem(Map<String, dynamic> item) async {
+    if (_isDeletionInProgress) return;
 
-    await showDialog(
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          backgroundColor: const Color(0xFF1E293B),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Assign Categories', style: TextStyle(color: Colors.white)),
-          content: SizedBox(
-            width: 280,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_categories.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Text('Create categories first from the playlist toolbar',
-                        style: TextStyle(color: Colors.white54, fontSize: 13)),
-                  )
-                else
-                  for (final cat in _categories)
-                    CheckboxListTile(
-                      dense: true,
-                      title: Text(cat, style: const TextStyle(color: Colors.white)),
-                      value: assigned.contains(cat),
-                      activeColor: const Color(0xFF6366F1),
-                      onChanged: (val) {
-                        setDialogState(() {
-                          if (val == true) {
-                            assigned.add(cat);
-                          } else {
-                            assigned.remove(cat);
-                          }
-                        });
-                      },
-                    ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () async {
-                await StorageService.setItemCategories(dedupeKey, assigned);
-                setState(() => _itemCategoriesMap[dedupeKey] = assigned);
-                if (ctx.mounted) Navigator.pop(ctx);
-              },
-              child: const Text('Save'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _renameItem(Map<String, dynamic> item) async {
-    final dedupeKey = StorageService.computePlaylistDedupeKey(item);
-    final currentTitle = (item['title'] as String?) ?? '';
-    final controller = TextEditingController(text: currentTitle);
-
-    final newTitle = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF0F172A),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(18),
           side: BorderSide(color: Colors.white.withOpacity(0.08)),
         ),
-        title: const Text('Rename', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: 'Enter new title',
-            hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
-            filled: true,
-            fillColor: const Color(0xFF1E293B),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide.none,
-            ),
-          ),
-          onSubmitted: (val) => Navigator.pop(ctx, val.trim()),
+        title: const Text(
+          'Remove from playlist?',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          '"${item['title'] ?? 'This item'}" will be removed from your playlist.',
+          style: const TextStyle(color: Colors.white70, fontSize: 15),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Keep'),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Save'),
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(foregroundColor: const Color(0xFFE50914)),
+            child: const Text('Remove'),
           ),
         ],
       ),
     );
 
-    if (newTitle != null && newTitle.isNotEmpty && newTitle != currentTitle) {
-      await StorageService.renamePlaylistItem(dedupeKey, newTitle);
-      await _refresh();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Item renamed')),
+    if (confirmed == true) {
+      setState(() { _isDeletionInProgress = true; });
+      try {
+        final currentIndex = _allItems.indexWhere(
+          (playlistItem) => StorageService.computePlaylistDedupeKey(playlistItem) ==
+                           StorageService.computePlaylistDedupeKey(item)
         );
+        final dedupeKey = StorageService.computePlaylistDedupeKey(item);
+        await StorageService.removePlaylistItemByKey(dedupeKey);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Removed from playlist')),
+        );
+        if (_allItems.length > 1 && currentIndex >= 0) {
+          setState(() {
+            _targetFocusIndex = currentIndex >= _allItems.length - 1
+                ? _allItems.length - 2
+                : currentIndex;
+            _shouldRestoreFocus = true;
+          });
+        } else {
+          setState(() {
+            _shouldRestoreFocus = false;
+            _targetFocusIndex = null;
+          });
+        }
+        await _refresh();
+      } finally {
+        if (mounted) {
+          setState(() { _isDeletionInProgress = false; });
+        }
       }
+    }
+  }
+
+  Future<void> _clearPlaylistProgress(Map<String, dynamic> item) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF0F172A),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(color: Colors.white.withOpacity(0.08)),
+        ),
+        title: const Text(
+          'Clear watch progress?',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'All watch progress for "${item['title'] ?? 'this playlist'}" will be cleared.',
+          style: const TextStyle(color: Colors.white70, fontSize: 15),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(foregroundColor: const Color(0xFFFF9800)),
+            child: const Text('Clear Progress'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final title = item['title'] as String? ?? '';
+      await StorageService.clearPlaylistProgress(title: title);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Watch progress cleared')),
+      );
+      await _refresh();
     }
   }
   
   // Custom methods for managing categories
   Future<void> _refreshCategories() async {
     final cats = await StorageService.getPlaylistCategories();
+    final itemCatMap = <String, List<String>>{};
+    for (final item in _allItems) {
+      final key = StorageService.computePlaylistDedupeKey(item);
+      itemCatMap[key] = await StorageService.getItemCategories(key);
+    }
     setState(() {
       _categories = cats;
-      // Rebuild item category map
-      _itemCategoriesMap = {};
-      for (final item in _allItems) {
-        final key = StorageService.computePlaylistDedupeKey(item);
-        _itemCategoriesMap[key] = StorageService.getItemCategories(key);
-      }
+      _itemCategoriesMap = itemCatMap;
     });
   }
 }
