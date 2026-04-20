@@ -1294,11 +1294,14 @@ class StorageService {
   }
 
   static String computePlaylistDedupeKey(Map<String, dynamic> item) {
+    // If item has a unique instance ID (from duplicate disambiguation), use it
+    final String? instanceId = item['playlistInstanceId'] as String?;
     final providerRaw = (item['provider'] as String?) ?? 'realdebrid';
     final provider = providerRaw.toLowerCase();
+    final String instanceSuffix = (instanceId != null && instanceId.isNotEmpty) ? '|inst:$instanceId' : '';
     final String? torrentHash = item['torrent_hash'] as String?;
     if (torrentHash != null && torrentHash.isNotEmpty) {
-      return '$provider|hash:${torrentHash.toLowerCase()}';
+      return '$provider|hash:${torrentHash.toLowerCase()}$instanceSuffix';
     }
     final dynamic torboxIdRaw = item['torboxTorrentId'];
     if (torboxIdRaw != null) {
@@ -1306,29 +1309,29 @@ class StorageService {
       final dynamic singleFileId = item['torboxFileId'];
       if (singleFileId != null) {
         final fileKey = 'torbox:${torboxId}:file:${singleFileId.toString()}';
-        return '$provider|${fileKey.toLowerCase()}';
+        return '$provider|${fileKey.toLowerCase()}$instanceSuffix';
       }
       final dynamic multiFileIds = item['torboxFileIds'];
       if (multiFileIds is List && multiFileIds.isNotEmpty) {
         final joined = multiFileIds.map((e) => e.toString()).join(',');
         final filesKey = 'torbox:${torboxId}:files:$joined';
-        return '$provider|${filesKey.toLowerCase()}';
+        return '$provider|${filesKey.toLowerCase()}$instanceSuffix';
       }
-      return '$provider|torbox:${torboxId.toLowerCase()}';
+      return '$provider|torbox:${torboxId.toLowerCase()}$instanceSuffix';
     }
     // PikPak file ID based key
     final dynamic pikpakFileId = item['pikpakFileId'];
     if (pikpakFileId != null) {
-      return '$provider|pikpak:file:${pikpakFileId.toString().toLowerCase()}';
+      return '$provider|pikpak:file:${pikpakFileId.toString().toLowerCase()}$instanceSuffix';
     }
     final dynamic pikpakFileIds = item['pikpakFileIds'];
     if (pikpakFileIds is List && pikpakFileIds.isNotEmpty) {
       final joined = pikpakFileIds.map((e) => e.toString()).join(',');
-      return '$provider|pikpak:files:${joined.toLowerCase()}';
+      return '$provider|pikpak:files:${joined.toLowerCase()}$instanceSuffix';
     }
     final String? rdId = (item['rdTorrentId'] as String?);
     if (rdId != null && rdId.isNotEmpty) {
-      return '$provider|rd:${rdId.toLowerCase()}';
+      return '$provider|rd:${rdId.toLowerCase()}$instanceSuffix';
     }
     final String source =
         (item['restrictedLink'] as String?)?.trim() ??
@@ -1336,7 +1339,7 @@ class StorageService {
         '';
     final String title = (item['title'] as String?)?.trim() ?? '';
     final legacyKey = '${source}|${title}'.toLowerCase();
-    return '$provider|$legacyKey';
+    return '$provider|$legacyKey$instanceSuffix';
   }
 
   /// Add a new playlist item if it does not already exist.
@@ -1357,8 +1360,32 @@ class StorageService {
       (entry) => computePlaylistDedupeKey(entry) == initialKey,
     );
     if (initialExists) {
-      debugPrint('Playlist dedupe: blocked by initial key match');
-      return false;
+      debugPrint('Playlist dedupe: duplicate detected — disambiguating title');
+      // Allow adding by disambiguating the title with a suffix (_1, _2, etc.)
+      final String originalTitle = (item['title'] as String?) ?? 'Video';
+      // Strip any existing _N suffix to avoid _1_2 chains
+      final strippedTitle = originalTitle.replaceFirst(RegExp(r'_\d+$'), '');
+      int suffix = 1;
+      // Find highest existing suffix for this title
+      for (final existing in items) {
+        final existingTitle = (existing['title'] as String?) ?? '';
+        if (existingTitle == strippedTitle) {
+          // Original title exists, start from _1
+        } else {
+          final match = RegExp(r'^(.+)_(\d+)$').firstMatch(existingTitle);
+          if (match != null && match.group(1) == strippedTitle) {
+            final existingSuffix = int.tryParse(match.group(2)!) ?? 0;
+            if (existingSuffix >= suffix) {
+              suffix = existingSuffix + 1;
+            }
+          }
+        }
+      }
+      item = Map<String, dynamic>.from(item);
+      item['title'] = '${strippedTitle}_$suffix';
+      // Add a unique instance ID so the dedupe key won't collide
+      item['playlistInstanceId'] = DateTime.now().millisecondsSinceEpoch.toString();
+      debugPrint('Playlist dedupe: renamed to "${item['title']}" with instanceId=${item['playlistInstanceId']}');
     }
 
     final enriched = Map<String, dynamic>.from(item);
