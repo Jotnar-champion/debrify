@@ -50,6 +50,7 @@ import '../widgets/aggregated_search_results.dart';
 import '../widgets/torrent_result_row.dart';
 import '../widgets/provider_status_cards.dart';
 import '../widgets/home_favorites_section.dart';
+import '../widgets/home_continue_watching_section.dart';
 import '../widgets/home_debrify_tv_favorites_section.dart';
 import '../widgets/home_stremio_tv_favorites_section.dart';
 import '../widgets/home_iptv_favorites_section.dart';
@@ -13199,6 +13200,17 @@ class _TorrentSearchScreenState extends State<TorrentSearchScreen>
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
+        // Continue Watching section (items with partial progress)
+        HomeContinueWatchingSection(
+          isTelevision: _isTelevision,
+          onRequestFocusAbove: () {
+            _providerAccordionFocusNode.requestFocus();
+          },
+          onRequestFocusBelow: () {
+            _homeFocusController.focusSection(HomeSection.favorites);
+          },
+        ),
+        const SizedBox(height: 16),
         // Playlist favorites section (horizontal scroll)
         HomeFavoritesSection(
           focusController: _homeFocusController,
