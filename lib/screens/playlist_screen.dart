@@ -1933,6 +1933,24 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
 
+  // Show search dialog
+  void _showSearchDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => _SearchDialog(
+        initialQuery: _searchController.text,
+        onSearch: (query) {
+          _searchController.text = query;
+          _searchQuery.value = query.toLowerCase().trim();
+        },
+        onClear: () {
+          _searchController.clear();
+          _searchQuery.value = '';
+        },
+      ),
+    );
+  }
+
   Widget _buildSortButton() {
     const sortOptions = {
       'recent': 'Recently Added',
@@ -2185,7 +2203,8 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                       const SliverToBoxAdapter(child: SizedBox(height: 40)),
                     ],
                   ),
-                );
+                ),
+              );
             },
           );
         },
