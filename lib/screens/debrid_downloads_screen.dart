@@ -125,6 +125,10 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
   final Set<String> _selectedTorrentIds = {};
   final Set<String> _selectedDownloadIds = {};
 
+  // Folder-level multi-select state (by file path/name)
+  bool _isFolderSelectionMode = false;
+  final Set<int> _selectedFolderNodeIndices = {};
+
   Set<String> get _activeSelectedIds =>
       _selectedView == _DebridDownloadsView.torrents
           ? _selectedTorrentIds
@@ -167,6 +171,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
   void initState() {
     super.initState();
     _checkIfTelevision();
+    _loadSavedLayoutPreferences();
     _loadApiKeyAndData();
     _torrentScrollController.addListener(_onTorrentScroll);
     _downloadScrollController.addListener(_onDownloadScroll);
@@ -323,6 +328,12 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
       return true;
     }
 
+    // Exit folder selection mode if active
+    if (_isFolderSelectionMode) {
+      _exitFolderSelectionMode();
+      return true;
+    }
+
     // Close search first if active
     if (_isSearchActive) {
       _toggleSearch();
@@ -378,6 +389,41 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         _loadMoreDownloads();
       }
     }
+  }
+
+  Future<void> _loadSavedLayoutPreferences() async {
+    final torrentLayout = await StorageService.getRdTorrentLayoutMode();
+    final downloadLayout = await StorageService.getRdDownloadLayoutMode();
+    final folderLayout = await StorageService.getRdFolderLayoutMode();
+    final gridCols = await StorageService.getRdGridColumnOverride();
+    if (mounted) {
+      setState(() {
+        _torrentLayoutMode = torrentLayout == 'grid' ? _LayoutMode.grid : _LayoutMode.list;
+        _downloadLayoutMode = downloadLayout == 'grid' ? _LayoutMode.grid : _LayoutMode.list;
+        _folderLayoutMode = folderLayout == 'grid' ? _LayoutMode.grid : _LayoutMode.list;
+        _gridColumnOverride = gridCols;
+      });
+    }
+  }
+
+  void _persistTorrentLayout(_LayoutMode mode) {
+    setState(() => _torrentLayoutMode = mode);
+    StorageService.setRdTorrentLayoutMode(mode == _LayoutMode.grid ? 'grid' : 'list');
+  }
+
+  void _persistDownloadLayout(_LayoutMode mode) {
+    setState(() => _downloadLayoutMode = mode);
+    StorageService.setRdDownloadLayoutMode(mode == _LayoutMode.grid ? 'grid' : 'list');
+  }
+
+  void _persistFolderLayout(_LayoutMode mode) {
+    setState(() => _folderLayoutMode = mode);
+    StorageService.setRdFolderLayoutMode(mode == _LayoutMode.grid ? 'grid' : 'list');
+  }
+
+  void _persistGridColumnOverride(int? cols) {
+    setState(() => _gridColumnOverride = cols);
+    StorageService.setRdGridColumnOverride(cols);
   }
 
   Future<void> _loadApiKeyAndData() async {
@@ -1344,6 +1390,46 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     });
   }
 
+  void _toggleFolderSelectionMode() {
+    setState(() {
+      if (_isFolderSelectionMode) {
+        _selectedFolderNodeIndices.clear();
+      }
+      _isFolderSelectionMode = !_isFolderSelectionMode;
+    });
+  }
+
+  void _exitFolderSelectionMode() {
+    if (!_isFolderSelectionMode) return;
+    setState(() {
+      _isFolderSelectionMode = false;
+      _selectedFolderNodeIndices.clear();
+    });
+  }
+
+  void _toggleFolderNodeSelection(int index) {
+    setState(() {
+      if (_selectedFolderNodeIndices.contains(index)) {
+        _selectedFolderNodeIndices.remove(index);
+      } else {
+        _selectedFolderNodeIndices.add(index);
+      }
+    });
+  }
+
+  void _toggleFolderSelectAll() {
+    setState(() {
+      if (_currentViewNodes != null &&
+          _selectedFolderNodeIndices.length == _currentViewNodes!.length) {
+        _selectedFolderNodeIndices.clear();
+      } else if (_currentViewNodes != null) {
+        _selectedFolderNodeIndices.addAll(
+          List.generate(_currentViewNodes!.length, (i) => i),
+        );
+      }
+    });
+  }
+
   void _toggleSelectAll() {
     setState(() {
       if (_isAllSelected) {
@@ -1973,6 +2059,9 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
 
   /// Navigate up one level
   void _navigateUp() {
+    // Clear folder selection when navigating
+    _exitFolderSelectionMode();
+
     if (_folderPath.isEmpty && _currentTorrentId != null) {
       // Go back to torrents list
       setState(() {
@@ -2507,7 +2596,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           _buildZoomButton(
             icon: Icons.remove_rounded,
             onTap: currentCols < maxCols
-                ? () => setState(() => _gridColumnOverride = currentCols + 1)
+                ? () => _persistGridColumnOverride(currentCols + 1)
                 : null,
             tooltip: 'Smaller',
           ),
@@ -2528,7 +2617,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           _buildZoomButton(
             icon: Icons.add_rounded,
             onTap: currentCols > minCols
-                ? () => setState(() => _gridColumnOverride = currentCols - 1)
+                ? () => _persistGridColumnOverride(currentCols - 1)
                 : null,
             tooltip: 'Larger',
           ),
@@ -2997,30 +3086,56 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
             onPressed: () => _handleBackNavigation(),
           ),
         ),
-        title: Text(_getCurrentFolderTitle()),
+        title: _isFolderSelectionMode
+            ? Text('${_selectedFolderNodeIndices.length} selected')
+            : Text(_getCurrentFolderTitle()),
         actions: [
-          _buildLayoutToggle(_folderLayoutMode, (mode) {
-            setState(() => _folderLayoutMode = mode);
-          }),
-          if (_folderLayoutMode == _LayoutMode.grid) ...[
-            const SizedBox(width: 2),
-            _buildGridZoomControl(context),
-          ],
-          const SizedBox(width: 4),
-          if (showSearch)
+          if (_isFolderSelectionMode) ...[
             IconButton(
-              focusNode: _searchButtonFocusNode,
-              icon: Icon(_isSearchActive ? Icons.close : Icons.search),
-              onPressed: _toggleSearch,
-              tooltip: _isSearchActive ? 'Close search' : 'Search files',
+              icon: Icon(
+                _currentViewNodes != null &&
+                        _selectedFolderNodeIndices.length == _currentViewNodes!.length
+                    ? Icons.deselect
+                    : Icons.select_all,
+              ),
+              onPressed: _toggleFolderSelectAll,
+              tooltip: 'Select all',
             ),
-          IconButton(
-            focusNode: _refreshButtonFocusNode,
-            icon: const Icon(Icons.refresh),
-            onPressed: _currentTorrent != null
-                ? () => _navigateIntoTorrent(_currentTorrent!)
-                : null,
-          ),
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: _exitFolderSelectionMode,
+              tooltip: 'Exit selection',
+            ),
+          ] else ...[
+            _buildLayoutToggle(_folderLayoutMode, (mode) {
+              _persistFolderLayout(mode);
+            }),
+            if (_folderLayoutMode == _LayoutMode.grid) ...[
+              const SizedBox(width: 2),
+              _buildGridZoomControl(context),
+            ],
+            const SizedBox(width: 4),
+            if (showSearch)
+              IconButton(
+                focusNode: _searchButtonFocusNode,
+                icon: Icon(_isSearchActive ? Icons.close : Icons.search),
+                onPressed: _toggleSearch,
+                tooltip: _isSearchActive ? 'Close search' : 'Search files',
+              ),
+            if (_currentViewNodes != null && _currentViewNodes!.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.checklist_outlined),
+                onPressed: _toggleFolderSelectionMode,
+                tooltip: 'Select items',
+              ),
+            IconButton(
+              focusNode: _refreshButtonFocusNode,
+              icon: const Icon(Icons.refresh),
+              onPressed: _currentTorrent != null
+                  ? () => _navigateIntoTorrent(_currentTorrent!)
+                  : null,
+            ),
+          ],
         ],
       ),
       body: Column(
@@ -3060,7 +3175,9 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         itemBuilder: (context, index) {
           final node = _currentViewNodes![index];
           return RepaintBoundary(
-            child: _buildNodeGridCard(node, index),
+            child: _isFolderSelectionMode
+                ? _wrapWithSelectionOverlay(index, _buildNodeGridCard(node, index))
+                : _buildNodeGridCard(node, index),
           );
         },
       );
@@ -3074,9 +3191,59 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
       itemBuilder: (context, index) {
         final node = _currentViewNodes![index];
         return RepaintBoundary(
-          child: _buildNodeCard(node, index),
+          child: _isFolderSelectionMode
+              ? _wrapWithSelectionCheckbox(index, _buildNodeCard(node, index))
+              : _buildNodeCard(node, index),
         );
       },
+    );
+  }
+
+  /// Wraps a grid card with a selection overlay (checkbox in corner)
+  Widget _wrapWithSelectionOverlay(int index, Widget child) {
+    final isSelected = _selectedFolderNodeIndices.contains(index);
+    return GestureDetector(
+      onTap: () => _toggleFolderNodeSelection(index),
+      child: Stack(
+        children: [
+          Opacity(opacity: isSelected ? 0.7 : 1.0, child: child),
+          Positioned(
+            top: 8,
+            right: 8,
+            child: Container(
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.black54,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                isSelected ? Icons.check_circle : Icons.circle_outlined,
+                color: Colors.white,
+                size: 24,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Wraps a list card with a leading selection checkbox
+  Widget _wrapWithSelectionCheckbox(int index, Widget child) {
+    final isSelected = _selectedFolderNodeIndices.contains(index);
+    return GestureDetector(
+      onTap: () => _toggleFolderNodeSelection(index),
+      child: Row(
+        children: [
+          Checkbox(
+            value: isSelected,
+            onChanged: (_) => _toggleFolderNodeSelection(index),
+            activeColor: Theme.of(context).colorScheme.primary,
+          ),
+          Expanded(child: child),
+        ],
+      ),
     );
   }
 
@@ -3644,142 +3811,163 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
 
   Widget _buildTorrentToolbar() {
     final theme = Theme.of(context);
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isCompact = screenWidth < 400;
+    final hPadding = isCompact ? 8.0 : 16.0;
+    final iconSize = isCompact ? 20.0 : 24.0;
+    final spacing = isCompact ? 4.0 : 8.0;
+
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: EdgeInsets.symmetric(horizontal: hPadding, vertical: 8),
+      padding: EdgeInsets.symmetric(horizontal: isCompact ? 8 : 16, vertical: 6),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFF1F2937)),
       ),
-      child: Row(
-        children: [
-          _buildViewSelector(),
-          const SizedBox(width: 8),
-          _buildLayoutToggle(_torrentLayoutMode, (mode) {
-            setState(() => _torrentLayoutMode = mode);
-          }),
-          if (_torrentLayoutMode == _LayoutMode.grid) ...[
-            const SizedBox(width: 6),
-            _buildGridZoomControl(context),
-          ],
-          const Spacer(),
-          Tooltip(
-            message: _isMainSearchActive ? 'Close search' : 'Search torrents',
-            child: IconButton(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildViewSelector(),
+            SizedBox(width: spacing),
+            _buildLayoutToggle(_torrentLayoutMode, (mode) {
+              _persistTorrentLayout(mode);
+            }),
+            if (_torrentLayoutMode == _LayoutMode.grid) ...[
+              SizedBox(width: spacing),
+              _buildGridZoomControl(context),
+            ],
+            SizedBox(width: spacing),
+            IconButton(
               onPressed: _toggleMainSearch,
-              icon: Icon(_isMainSearchActive ? Icons.search_off : Icons.search),
+              icon: Icon(_isMainSearchActive ? Icons.search_off : Icons.search, size: iconSize),
               color: _isMainSearchActive
                   ? theme.colorScheme.primary
                   : theme.colorScheme.onSurface,
               visualDensity: VisualDensity.compact,
+              tooltip: _isMainSearchActive ? 'Close search' : 'Search torrents',
+              padding: EdgeInsets.all(isCompact ? 4 : 8),
+              constraints: const BoxConstraints(),
             ),
-          ),
-          if (_torrents.isNotEmpty) ...[
-            Tooltip(
-              message: _isSelectionMode ? 'Exit selection' : 'Select items',
-              child: IconButton(
+            if (_torrents.isNotEmpty) ...[
+              IconButton(
                 onPressed: _toggleSelectionMode,
                 icon: Icon(
                   _isSelectionMode ? Icons.close : Icons.checklist_outlined,
+                  size: iconSize,
                 ),
                 color: _isSelectionMode
                     ? theme.colorScheme.error
                     : theme.colorScheme.onSurface,
                 visualDensity: VisualDensity.compact,
+                tooltip: _isSelectionMode ? 'Exit selection' : 'Select items',
+                padding: EdgeInsets.all(isCompact ? 4 : 8),
+                constraints: const BoxConstraints(),
               ),
-            ),
-            Tooltip(
-              message: 'Delete all torrents',
-              child: IconButton(
+              IconButton(
                 onPressed: _handleDeleteAllTorrents,
-                icon: const Icon(Icons.delete_sweep_outlined),
+                icon: Icon(Icons.delete_sweep_outlined, size: iconSize),
                 color: theme.colorScheme.error,
                 visualDensity: VisualDensity.compact,
+                tooltip: 'Delete all torrents',
+                padding: EdgeInsets.all(isCompact ? 4 : 8),
+                constraints: const BoxConstraints(),
               ),
-            ),
-          ],
-          Tooltip(
-            message: 'Add magnet link',
-            child: IconButton(
+            ],
+            IconButton(
               onPressed: _showAddMagnetDialog,
-              icon: const Icon(Icons.add_circle_outline),
+              icon: Icon(Icons.add_circle_outline, size: iconSize),
               color: theme.colorScheme.primary,
               visualDensity: VisualDensity.compact,
+              tooltip: 'Add magnet link',
+              padding: EdgeInsets.all(isCompact ? 4 : 8),
+              constraints: const BoxConstraints(),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildDownloadToolbar() {
     final theme = Theme.of(context);
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isCompact = screenWidth < 400;
+    final iconSize = isCompact ? 20.0 : 24.0;
+    final spacing = isCompact ? 4.0 : 8.0;
+
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      margin: EdgeInsets.symmetric(horizontal: isCompact ? 8 : 16, vertical: 8),
+      padding: EdgeInsets.symmetric(horizontal: isCompact ? 8 : 16, vertical: 6),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFF1F2937)),
       ),
-      child: Row(
-        children: [
-          _buildViewSelector(),
-          const SizedBox(width: 8),
-          _buildLayoutToggle(_downloadLayoutMode, (mode) {
-            setState(() => _downloadLayoutMode = mode);
-          }),
-          if (_downloadLayoutMode == _LayoutMode.grid) ...[
-            const SizedBox(width: 6),
-            _buildGridZoomControl(context),
-          ],
-          const Spacer(),
-          Tooltip(
-            message: _isMainSearchActive ? 'Close search' : 'Search downloads',
-            child: IconButton(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildViewSelector(),
+            SizedBox(width: spacing),
+            _buildLayoutToggle(_downloadLayoutMode, (mode) {
+              _persistDownloadLayout(mode);
+            }),
+            if (_downloadLayoutMode == _LayoutMode.grid) ...[
+              SizedBox(width: spacing),
+              _buildGridZoomControl(context),
+            ],
+            SizedBox(width: spacing),
+            IconButton(
               onPressed: _toggleMainSearch,
-              icon: Icon(_isMainSearchActive ? Icons.search_off : Icons.search),
+              icon: Icon(_isMainSearchActive ? Icons.search_off : Icons.search, size: iconSize),
               color: _isMainSearchActive
                   ? theme.colorScheme.primary
                   : theme.colorScheme.onSurface,
               visualDensity: VisualDensity.compact,
+              tooltip: _isMainSearchActive ? 'Close search' : 'Search downloads',
+              padding: EdgeInsets.all(isCompact ? 4 : 8),
+              constraints: const BoxConstraints(),
             ),
-          ),
-          if (_downloads.isNotEmpty) ...[
-            Tooltip(
-              message: _isSelectionMode ? 'Exit selection' : 'Select items',
-              child: IconButton(
+            if (_downloads.isNotEmpty) ...[
+              IconButton(
                 onPressed: _toggleSelectionMode,
                 icon: Icon(
                   _isSelectionMode ? Icons.close : Icons.checklist_outlined,
+                  size: iconSize,
                 ),
                 color: _isSelectionMode
                     ? theme.colorScheme.error
                     : theme.colorScheme.onSurface,
                 visualDensity: VisualDensity.compact,
+                tooltip: _isSelectionMode ? 'Exit selection' : 'Select items',
+                padding: EdgeInsets.all(isCompact ? 4 : 8),
+                constraints: const BoxConstraints(),
               ),
-            ),
-            Tooltip(
-              message: 'Delete all downloads',
-              child: IconButton(
+              IconButton(
                 onPressed: _handleDeleteAllDownloads,
-                icon: const Icon(Icons.delete_sweep_outlined),
+                icon: Icon(Icons.delete_sweep_outlined, size: iconSize),
                 color: theme.colorScheme.error,
                 visualDensity: VisualDensity.compact,
+                tooltip: 'Delete all downloads',
+                padding: EdgeInsets.all(isCompact ? 4 : 8),
+                constraints: const BoxConstraints(),
               ),
-            ),
-          ],
-          Tooltip(
-            message: 'Add file link',
-            child: IconButton(
+            ],
+            IconButton(
               onPressed: _showAddLinkDialog,
-              icon: const Icon(Icons.note_add_outlined),
+              icon: Icon(Icons.note_add_outlined, size: iconSize),
               color: theme.colorScheme.primary,
               visualDensity: VisualDensity.compact,
+              tooltip: 'Add file link',
+              padding: EdgeInsets.all(isCompact ? 4 : 8),
+              constraints: const BoxConstraints(),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
