@@ -243,6 +243,12 @@ class StorageService {
   static const String _remoteTvDeviceNameKey = 'remote_tv_device_name';
   static const String _remoteLastDeviceKey = 'remote_last_device';
 
+  // Real-Debrid screen layout preferences
+  static const String _rdTorrentLayoutModeKey = 'rd_torrent_layout_mode'; // 'list' or 'grid'
+  static const String _rdDownloadLayoutModeKey = 'rd_download_layout_mode';
+  static const String _rdFolderLayoutModeKey = 'rd_folder_layout_mode';
+  static const String _rdGridColumnOverrideKey = 'rd_grid_column_override'; // null = auto
+
   static const int _debrifyTvRandomStartPercentDefault = 20;
   static const int _debrifyTvRandomStartPercentMin = 10;
   static const int _debrifyTvRandomStartPercentMax = 90;
@@ -4129,6 +4135,59 @@ class StorageService {
       }
     }
     return deadKeys;
+  }
+
+  // ==========================================================================
+  // Real-Debrid Screen Layout Preferences
+  // ==========================================================================
+
+  /// Get saved layout mode for torrents tab ('list' or 'grid')
+  static Future<String> getRdTorrentLayoutMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_rdTorrentLayoutModeKey) ?? 'list';
+  }
+
+  static Future<void> setRdTorrentLayoutMode(String mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_rdTorrentLayoutModeKey, mode);
+  }
+
+  /// Get saved layout mode for downloads tab
+  static Future<String> getRdDownloadLayoutMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_rdDownloadLayoutModeKey) ?? 'list';
+  }
+
+  static Future<void> setRdDownloadLayoutMode(String mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_rdDownloadLayoutModeKey, mode);
+  }
+
+  /// Get saved layout mode for folder browser
+  static Future<String> getRdFolderLayoutMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_rdFolderLayoutModeKey) ?? 'list';
+  }
+
+  static Future<void> setRdFolderLayoutMode(String mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_rdFolderLayoutModeKey, mode);
+  }
+
+  /// Get saved grid column override (null = auto)
+  static Future<int?> getRdGridColumnOverride() async {
+    final prefs = await SharedPreferences.getInstance();
+    final val = prefs.getInt(_rdGridColumnOverrideKey);
+    return val;
+  }
+
+  static Future<void> setRdGridColumnOverride(int? columns) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (columns == null) {
+      await prefs.remove(_rdGridColumnOverrideKey);
+    } else {
+      await prefs.setInt(_rdGridColumnOverrideKey, columns);
+    }
   }
 }
 
