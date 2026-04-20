@@ -11,12 +11,15 @@ import '../services/main_page_bridge.dart';
 import '../services/account_service.dart';
 import '../services/download_service.dart';
 import '../services/storage_service.dart';
+import '../services/theme_service.dart';
 import '../services/torbox_account_service.dart';
 import '../services/pikpak_api_service.dart';
 import '../services/debrify_tv_repository.dart';
 import '../services/stremio_service.dart';
 import '../services/android_native_downloader.dart';
 import '../widgets/shimmer.dart';
+import '../widgets/keyboard_shortcuts_overlay.dart';
+import 'watch_history_screen.dart';
 import 'settings/debrify_tv_settings_page.dart';
 import 'settings/pikpak_settings_page.dart';
 import 'settings/real_debrid_settings_page.dart';
@@ -602,6 +605,33 @@ class _SettingsLayout extends StatelessWidget {
                   subtitle: 'Control Debrify TV from your phone',
                   onTap: () async => onOpenRemoteControl(),
                 ),
+              _SettingsTile(
+                icon: Icons.palette_rounded,
+                title: 'Theme',
+                subtitle: ThemeService.instance.currentTheme == 'dark'
+                    ? 'Dark'
+                    : ThemeService.instance.currentTheme == 'amoled'
+                        ? 'AMOLED Black'
+                        : 'Light',
+                onTap: () => _showThemePicker(context),
+              ),
+              _SettingsTile(
+                icon: Icons.history_rounded,
+                title: 'Watch History',
+                subtitle: 'View and manage your watch history',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const WatchHistoryScreen()),
+                ),
+              ),
+              if (!kIsWeb &&
+                  (Platform.isWindows || Platform.isMacOS || Platform.isLinux))
+                _SettingsTile(
+                  icon: Icons.keyboard_rounded,
+                  title: 'Keyboard Shortcuts',
+                  subtitle: 'View all available shortcuts',
+                  onTap: () => KeyboardShortcutsOverlay.show(context),
+                ),
             ],
           ),
           const SizedBox(height: 24),
@@ -670,6 +700,12 @@ class _SettingsLayout extends StatelessWidget {
                 title: 'Clear Playback Data',
                 subtitle: 'Reset resume points and playback sessions',
                 onTap: onClearPlayback,
+              ),
+              _SettingsTile(
+                icon: Icons.health_and_safety_rounded,
+                title: 'Check Playlist Link Health',
+                subtitle: 'Find and remove dead or expired links',
+                onTap: () => _showLinkHealthCheck(context),
               ),
             ],
           ),
@@ -1364,6 +1400,171 @@ class _SkeletonTile extends StatelessWidget {
           Expanded(child: Shimmer(height: 14)),
         ],
       ),
+    );
+  }
+}
+
+void _showThemePicker(BuildContext context) {
+  final theme = Theme.of(context);
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: theme.colorScheme.surfaceContainerHighest,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (ctx) {
+      return SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.outline,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text('Choose Theme', style: theme.textTheme.titleLarge),
+            const SizedBox(height: 16),
+            for (final entry in [
+              ('dark', 'Dark', Icons.dark_mode_rounded),
+              ('amoled', 'AMOLED Black', Icons.brightness_1),
+              ('light', 'Light', Icons.light_mode_rounded),
+            ])
+              ListTile(
+                leading: Icon(entry.$3, color: theme.colorScheme.primary),
+                title: Text(entry.$2),
+                trailing: ThemeService.instance.currentTheme == entry.$1
+                    ? Icon(Icons.check_circle, color: theme.colorScheme.primary)
+                    : null,
+                onTap: () {
+                  ThemeService.instance.setTheme(entry.$1);
+                  Navigator.pop(ctx);
+                },
+              ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+void _showLinkHealthCheck(BuildContext context) {
+  showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) => const _LinkHealthCheckDialog(),
+  );
+}
+
+class _LinkHealthCheckDialog extends StatefulWidget {
+  const _LinkHealthCheckDialog();
+
+  @override
+  State<_LinkHealthCheckDialog> createState() => _LinkHealthCheckDialogState();
+}
+
+class _LinkHealthCheckDialogState extends State<_LinkHealthCheckDialog> {
+  bool _checking = true;
+  List<String> _deadKeys = [];
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _runCheck();
+  }
+
+  Future<void> _runCheck() async {
+    try {
+      final deadKeys = await StorageService.checkPlaylistHealth();
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        _deadKeys = deadKeys;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        _error = e.toString();
+      });
+    }
+  }
+
+  Future<void> _removeDeadLinks() async {
+    for (final key in _deadKeys) {
+      await StorageService.removePlaylistItemByKey(key);
+    }
+    if (!mounted) return;
+    Navigator.pop(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Removed ${_deadKeys.length} dead link(s)')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AlertDialog(
+      backgroundColor: theme.colorScheme.surfaceContainerHighest,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: const Text('Link Health Check', style: TextStyle(color: Colors.white)),
+      content: _checking
+          ? const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Checking playlist links...\nThis may take a moment.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white70)),
+              ],
+            )
+          : _error != null
+              ? Text('Error: $_error', style: const TextStyle(color: Colors.redAccent))
+              : _deadKeys.isEmpty
+                  ? const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.check_circle, color: Colors.green, size: 48),
+                        SizedBox(height: 12),
+                        Text('All links are healthy!',
+                            style: TextStyle(color: Colors.white, fontSize: 16)),
+                      ],
+                    )
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 48),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Found ${_deadKeys.length} dead link(s)',
+                          style: const TextStyle(color: Colors.white, fontSize: 16),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'These links are expired or no longer accessible.',
+                          style: TextStyle(color: Colors.white54, fontSize: 13),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text(_checking ? 'Cancel' : 'Close'),
+        ),
+        if (!_checking && _deadKeys.isNotEmpty)
+          FilledButton(
+            onPressed: _removeDeadLinks,
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: Text('Remove ${_deadKeys.length} Dead Link(s)'),
+          ),
+      ],
     );
   }
 }
