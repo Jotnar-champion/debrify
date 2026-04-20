@@ -73,6 +73,9 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
   _LayoutMode _downloadLayoutMode = _LayoutMode.list;
   _LayoutMode _folderLayoutMode = _LayoutMode.list;
 
+  // Grid zoom level (column count) — adjustable like Windows Explorer
+  int? _gridColumnOverride; // null = auto-detect based on screen width
+
   // Torrent Downloads data
   final List<RDTorrent> _torrents = [];
   final ScrollController _torrentScrollController = ScrollController();
@@ -98,6 +101,10 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
   String? _currentTorrentId;
   RDTorrent? _currentTorrent;
   List<String> _folderPath = []; // e.g., ["Season 1", "Episodes"]
+
+  // Saved scroll positions (preserved when entering/leaving folder view)
+  double _savedTorrentScrollOffset = 0.0;
+  double _savedDownloadScrollOffset = 0.0;
   RDFileNode? _currentFolderTree;
   List<RDFileNode>? _currentViewNodes; // Current folder contents
   bool _isLoadingFolder = false;
@@ -1351,6 +1358,116 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     });
   }
 
+  Future<void> _handleAddSelectedToPlaylist() async {
+    if (_apiKey == null || _activeSelectedIds.isEmpty) return;
+
+    final isTorrents = _selectedView == _DebridDownloadsView.torrents;
+    if (!isTorrents) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Playlist add is only supported for torrents')),
+      );
+      return;
+    }
+
+    final selectedTorrents = _torrents
+        .where((t) => _selectedTorrentIds.contains(t.id))
+        .toList();
+
+    if (selectedTorrents.isEmpty) return;
+
+    int addedCount = 0;
+    int skippedCount = 0;
+    int errorCount = 0;
+
+    // Show progress dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF0F172A),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(color: Colors.white.withOpacity(0.08)),
+            ),
+            title: const Text(
+              'Adding to Playlist...',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                Text(
+                  '${addedCount + skippedCount + errorCount} / ${selectedTorrents.length}',
+                  style: const TextStyle(color: Colors.white70),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    for (final torrent in selectedTorrents) {
+      try {
+        if (torrent.links.length == 1) {
+          try {
+            final unrestrictResult = await DebridService.unrestrictLink(
+              _apiKey!,
+              torrent.links[0],
+            );
+            final mimeType = unrestrictResult['mimeType']?.toString() ?? '';
+            if (FileUtils.isVideoMimeType(mimeType)) {
+              final ok = await StorageService.addPlaylistItemRaw({
+                'title': FileUtils.cleanPlaylistTitle(torrent.filename),
+                'url': '',
+                'restrictedLink': torrent.links[0],
+                'rdTorrentId': torrent.id,
+                'kind': 'single',
+              });
+              if (ok) { addedCount++; } else { skippedCount++; }
+            } else {
+              skippedCount++;
+            }
+          } catch (_) {
+            errorCount++;
+          }
+        } else {
+          final ok = await StorageService.addPlaylistItemRaw({
+            'title': FileUtils.cleanPlaylistTitle(torrent.filename),
+            'kind': 'collection',
+            'rdTorrentId': torrent.id,
+            'count': torrent.links.length,
+          });
+          if (ok) { addedCount++; } else { skippedCount++; }
+        }
+      } catch (_) {
+        errorCount++;
+      }
+    }
+
+    if (!mounted) return;
+    Navigator.of(context).pop(); // Dismiss progress dialog
+
+    setState(() {
+      _isSelectionMode = false;
+      _selectedTorrentIds.clear();
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Added $addedCount to playlist'
+          '${skippedCount > 0 ? ', $skippedCount already existed' : ''}'
+          '${errorCount > 0 ? ', $errorCount failed' : ''}',
+        ),
+      ),
+    );
+  }
+
   Future<void> _handleDeleteSelected() async {
     if (_apiKey == null || _activeSelectedIds.isEmpty) return;
 
@@ -1787,6 +1904,14 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           break;
       }
 
+      // Save scroll positions before switching to folder view
+      if (_torrentScrollController.hasClients) {
+        _savedTorrentScrollOffset = _torrentScrollController.offset;
+      }
+      if (_downloadScrollController.hasClients) {
+        _savedDownloadScrollOffset = _downloadScrollController.offset;
+      }
+
       setState(() {
         _currentTorrentId = torrent.id;
         _currentTorrent = torrent;
@@ -1856,6 +1981,27 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         _currentFolderTree = null;
         _currentViewNodes = null;
         _folderPath = [];
+      });
+
+      // Restore scroll position after the list view rebuilds
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_selectedView == _DebridDownloadsView.torrents &&
+            _torrentScrollController.hasClients) {
+          _torrentScrollController.jumpTo(
+            _savedTorrentScrollOffset.clamp(
+              0.0,
+              _torrentScrollController.position.maxScrollExtent,
+            ),
+          );
+        } else if (_selectedView == _DebridDownloadsView.ddl &&
+            _downloadScrollController.hasClients) {
+          _downloadScrollController.jumpTo(
+            _savedDownloadScrollOffset.clamp(
+              0.0,
+              _downloadScrollController.position.maxScrollExtent,
+            ),
+          );
+        }
       });
 
     } else if (_folderPath.isNotEmpty && _currentFolderTree != null) {
@@ -2323,13 +2469,100 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
 
   // ============ Layout Mode Helpers ============
 
-  /// Get column count for grid based on screen width
+  /// Get column count for grid based on screen width or user override
   int _getGridCrossAxisCount(BuildContext context) {
+    if (_gridColumnOverride != null) return _gridColumnOverride!;
     final width = MediaQuery.of(context).size.width;
     if (width > 1200) return 4;
     if (width > 900) return 3;
     if (width > 600) return 2;
     return 2;
+  }
+
+  /// Get the min/max column range based on screen width
+  (int, int) _getGridColumnRange(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
+    if (width > 900) return (2, 8);
+    if (width > 600) return (1, 5);
+    return (1, 4);
+  }
+
+  /// Build the grid zoom control (Windows Explorer style)
+  Widget _buildGridZoomControl(BuildContext context) {
+    final theme = Theme.of(context);
+    final (minCols, maxCols) = _getGridColumnRange(context);
+    final currentCols = _getGridCrossAxisCount(context);
+
+    return Container(
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Zoom out (more columns = smaller tiles)
+          _buildZoomButton(
+            icon: Icons.remove_rounded,
+            onTap: currentCols < maxCols
+                ? () => setState(() => _gridColumnOverride = currentCols + 1)
+                : null,
+            tooltip: 'Smaller',
+          ),
+          // Column count indicator
+          Container(
+            width: 28,
+            alignment: Alignment.center,
+            child: Text(
+              '$currentCols',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+              ),
+            ),
+          ),
+          // Zoom in (fewer columns = larger tiles)
+          _buildZoomButton(
+            icon: Icons.add_rounded,
+            onTap: currentCols > minCols
+                ? () => setState(() => _gridColumnOverride = currentCols - 1)
+                : null,
+            tooltip: 'Larger',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildZoomButton({
+    required IconData icon,
+    required VoidCallback? onTap,
+    required String tooltip,
+  }) {
+    final theme = Theme.of(context);
+    final isEnabled = onTap != null;
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          width: 28,
+          height: 28,
+          alignment: Alignment.center,
+          child: Icon(
+            icon,
+            size: 18,
+            color: isEnabled
+                ? theme.colorScheme.primary
+                : theme.colorScheme.onSurface.withValues(alpha: 0.2),
+          ),
+        ),
+      ),
+    );
   }
 
   /// Build the layout mode toggle widget
@@ -2769,6 +3002,10 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           _buildLayoutToggle(_folderLayoutMode, (mode) {
             setState(() => _folderLayoutMode = mode);
           }),
+          if (_folderLayoutMode == _LayoutMode.grid) ...[
+            const SizedBox(width: 2),
+            _buildGridZoomControl(context),
+          ],
           const SizedBox(width: 4),
           if (showSearch)
             IconButton(
@@ -3411,6 +3648,10 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           _buildLayoutToggle(_torrentLayoutMode, (mode) {
             setState(() => _torrentLayoutMode = mode);
           }),
+          if (_torrentLayoutMode == _LayoutMode.grid) ...[
+            const SizedBox(width: 6),
+            _buildGridZoomControl(context),
+          ],
           const Spacer(),
           Tooltip(
             message: _isMainSearchActive ? 'Close search' : 'Search torrents',
@@ -3478,6 +3719,10 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           _buildLayoutToggle(_downloadLayoutMode, (mode) {
             setState(() => _downloadLayoutMode = mode);
           }),
+          if (_downloadLayoutMode == _LayoutMode.grid) ...[
+            const SizedBox(width: 6),
+            _buildGridZoomControl(context),
+          ],
           const Spacer(),
           Tooltip(
             message: _isMainSearchActive ? 'Close search' : 'Search downloads',
