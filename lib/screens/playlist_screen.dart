@@ -21,6 +21,7 @@ import '../services/main_page_bridge.dart';
 import '../widgets/adaptive_playlist_section.dart';
 import 'video_player_screen.dart';
 import 'playlist_content_view_screen.dart';
+import 'watch_history_screen.dart';
 
 class PlaylistScreen extends StatefulWidget {
   const PlaylistScreen({super.key});
@@ -55,6 +56,14 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
 
   // Prevent concurrent deletion operations
   bool _isDeletionInProgress = false;
+
+  // Sort preference
+  String _sortMode = 'recent'; // recent, lastPlayed, az, za, provider, kind, progress
+
+  // Category filter
+  List<String> _categories = [];
+  Map<String, List<String>> _itemCategoriesMap = {};
+  String? _selectedCategory; // null = show all
 
   // GlobalKeys for playlist sections (for TV focus management)
   final GlobalKey<AdaptivePlaylistSectionState> _favoritesSectionKey = GlobalKey();
@@ -147,11 +156,25 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     // Load favorites
     final favoriteKeys = await StorageService.getPlaylistFavoriteKeys();
 
+    // Load sort preference
+    final sortMode = await StorageService.getPlaylistSortPreference();
+
+    // Load categories
+    final categories = await StorageService.getPlaylistCategories();
+    final itemCatMap = <String, List<String>>{};
+    for (final item in items) {
+      final key = StorageService.computePlaylistDedupeKey(item);
+      itemCatMap[key] = await StorageService.getItemCategories(key);
+    }
+
     if (!mounted) return;
     setState(() {
       _allItems = items;
       _progressMap = progressMap;
       _favoriteKeys = favoriteKeys;
+      _sortMode = sortMode;
+      _categories = categories;
+      _itemCategoriesMap = itemCatMap;
     });
   }
 
@@ -159,20 +182,73 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     await _loadData();
   }
 
-  // Section getter: All items sorted by addedAt (most recent first)
+  // Section getter: All items sorted by current sort preference
   List<Map<String, dynamic>> get _allItemsSorted {
-    return _allItems.toList()
-      ..sort((a, b) {
-        final aAdded = a['addedAt'] as int? ?? 0;
-        final bAdded = b['addedAt'] as int? ?? 0;
-        return bAdded.compareTo(aAdded); // Descending (most recent first)
-      });
+    final list = _allItems.toList();
+    switch (_sortMode) {
+      case 'az':
+        list.sort((a, b) => ((a['title'] as String?) ?? '').toLowerCase()
+            .compareTo(((b['title'] as String?) ?? '').toLowerCase()));
+        break;
+      case 'za':
+        list.sort((a, b) => ((b['title'] as String?) ?? '').toLowerCase()
+            .compareTo(((a['title'] as String?) ?? '').toLowerCase()));
+        break;
+      case 'lastPlayed':
+        list.sort((a, b) {
+          final aPlayed = a['lastPlayedAt'] as int? ?? 0;
+          final bPlayed = b['lastPlayedAt'] as int? ?? 0;
+          return bPlayed.compareTo(aPlayed);
+        });
+        break;
+      case 'provider':
+        list.sort((a, b) => ((a['provider'] as String?) ?? 'realdebrid')
+            .compareTo((b['provider'] as String?) ?? 'realdebrid'));
+        break;
+      case 'kind':
+        list.sort((a, b) => ((a['kind'] as String?) ?? 'single')
+            .compareTo((b['kind'] as String?) ?? 'single'));
+        break;
+      case 'progress':
+        list.sort((a, b) {
+          final aKey = StorageService.computePlaylistDedupeKey(a);
+          final bKey = StorageService.computePlaylistDedupeKey(b);
+          final aProgress = _progressMap[aKey];
+          final bProgress = _progressMap[bKey];
+          final aPos = (aProgress?['positionMs'] as int?) ?? 0;
+          final aDur = (aProgress?['durationMs'] as int?) ?? 1;
+          final bPos = (bProgress?['positionMs'] as int?) ?? 0;
+          final bDur = (bProgress?['durationMs'] as int?) ?? 1;
+          final aPct = aDur > 0 ? aPos / aDur : 0.0;
+          final bPct = bDur > 0 ? bPos / bDur : 0.0;
+          return bPct.compareTo(aPct); // Most progress first
+        });
+        break;
+      case 'recent':
+      default:
+        list.sort((a, b) {
+          final aAdded = a['addedAt'] as int? ?? 0;
+          final bAdded = b['addedAt'] as int? ?? 0;
+          return bAdded.compareTo(aAdded);
+        });
+        break;
+    }
+    return list;
   }
 
   // Search-filtered items
   List<Map<String, dynamic>> _getFilteredItems(String query) {
-    if (query.isEmpty) return _allItemsSorted;
-    return _allItemsSorted.where((item) {
+    var items = _allItemsSorted;
+    // Filter by category
+    if (_selectedCategory != null) {
+      items = items.where((item) {
+        final key = StorageService.computePlaylistDedupeKey(item);
+        final cats = _itemCategoriesMap[key] ?? [];
+        return cats.contains(_selectedCategory);
+      }).toList();
+    }
+    if (query.isEmpty) return items;
+    return items.where((item) {
       final title = ((item['title'] as String?) ?? '').toLowerCase();
       return title.contains(query);
     }).toList();
@@ -218,6 +294,8 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   Future<void> _playItem(Map<String, dynamic> item) async {
     // Track when user plays this item
     await StorageService.updatePlaylistItemLastPlayed(item);
+    // Record in watch history
+    await StorageService.addWatchHistoryEntry(item);
 
     final String title = (item['title'] as String?) ?? 'Video';
     final String provider =
@@ -1124,7 +1202,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
       // Sort entries based on view mode
       if (savedViewModeString == 'sortedAZ') {
         // Sort A-Z mode: Use folder-based sorting
-        // Group files by folder path (extracted from file name)
+        // Group files by folder path (extracted from file metadata)
         final folderGroups = <String, List<_PikPakPlaylistCandidate>>{};
         for (final candidate in candidates) {
           // Get the full path from the file metadata
@@ -1589,171 +1667,404 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     }
   }
 
-  Future<void> _viewItem(Map<String, dynamic> item) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => PlaylistContentViewScreen(
-          playlistItem: item,
-          onPlaybackStarted: () => Navigator.of(context).pop(),
+  // ─── Category Management ───
+
+  Widget _buildCategoryChips() {
+    if (_categories.isEmpty) return const SizedBox.shrink();
+    return SizedBox(
+      height: 38,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        children: [
+          _categoryChip('All', null),
+          for (final cat in _categories) _categoryChip(cat, cat),
+          const SizedBox(width: 4),
+          GestureDetector(
+            onTap: _showManageCategoriesDialog,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.06),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white.withOpacity(0.1)),
+              ),
+              child: const Icon(Icons.settings, color: Colors.white38, size: 16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _categoryChip(String label, String? value) {
+    final selected = _selectedCategory == value;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: GestureDetector(
+        onTap: () => setState(() => _selectedCategory = value),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFF6366F1) : Colors.white.withOpacity(0.06),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: selected ? const Color(0xFF6366F1) : Colors.white.withOpacity(0.08),
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : Colors.white70,
+              fontSize: 13,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            ),
+          ),
         ),
       ),
     );
-
-    // Refresh data when returning from view screen
-    // This ensures poster updates are reflected immediately
-    await _refresh();
   }
 
-  Future<void> _removeItem(Map<String, dynamic> item) async {
-    // Prevent concurrent deletions
-    if (_isDeletionInProgress) return;
-
-    // Show confirmation dialog
-    final confirmed = await showDialog<bool>(
+  Future<void> _showManageCategoriesDialog() async {
+    final controller = TextEditingController();
+    await showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Manage Categories', style: TextStyle(color: Colors.white)),
+          content: SizedBox(
+            width: 300,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: controller,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          hintText: 'New category...',
+                          hintStyle: TextStyle(color: Colors.white.withOpacity(0.4)),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.add_circle, color: Color(0xFF6366F1)),
+                      onPressed: () async {
+                        final name = controller.text.trim();
+                        if (name.isNotEmpty && !_categories.contains(name)) {
+                          await StorageService.addPlaylistCategory(name);
+                          controller.clear();
+                          final cats = await StorageService.getPlaylistCategories();
+                          setDialogState(() {});
+                          setState(() => _categories = cats);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 200),
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final cat in _categories)
+                        ListTile(
+                          dense: true,
+                          title: Text(cat, style: const TextStyle(color: Colors.white)),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                            onPressed: () async {
+                              await StorageService.removePlaylistCategory(cat);
+                              final cats = await StorageService.getPlaylistCategories();
+                              setDialogState(() {});
+                              setState(() {
+                                _categories = cats;
+                                if (_selectedCategory == cat) _selectedCategory = null;
+                              });
+                            },
+                          ),
+                        ),
+                      if (_categories.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text('No categories yet', style: TextStyle(color: Colors.white38)),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+  }
+
+  Future<void> _showAssignCategoryDialog(Map<String, dynamic> item) async {
+    final dedupeKey = StorageService.computePlaylistDedupeKey(item);
+    var assigned = List<String>.from(_itemCategoriesMap[dedupeKey] ?? []);
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Assign Categories', style: TextStyle(color: Colors.white)),
+          content: SizedBox(
+            width: 280,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_categories.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('Create categories first from the playlist toolbar',
+                        style: TextStyle(color: Colors.white54, fontSize: 13)),
+                  )
+                else
+                  for (final cat in _categories)
+                    CheckboxListTile(
+                      dense: true,
+                      title: Text(cat, style: const TextStyle(color: Colors.white)),
+                      value: assigned.contains(cat),
+                      activeColor: const Color(0xFF6366F1),
+                      onChanged: (val) {
+                        setDialogState(() {
+                          if (val == true) {
+                            assigned.add(cat);
+                          } else {
+                            assigned.remove(cat);
+                          }
+                        });
+                      },
+                    ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                await StorageService.setItemCategories(dedupeKey, assigned);
+                setState(() => _itemCategoriesMap[dedupeKey] = assigned);
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _renameItem(Map<String, dynamic> item) async {
+    final dedupeKey = StorageService.computePlaylistDedupeKey(item);
+    final currentTitle = (item['title'] as String?) ?? '';
+    final controller = TextEditingController(text: currentTitle);
+
+    final newTitle = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0F172A),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(18),
           side: BorderSide(color: Colors.white.withOpacity(0.08)),
         ),
-        title: const Text(
-          'Remove from playlist?',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+        title: const Text('Rename', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Enter new title',
+            hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+            filled: true,
+            fillColor: const Color(0xFF1E293B),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+          ),
+          onSubmitted: (val) => Navigator.pop(ctx, val.trim()),
         ),
-        content: Text(
-          '"${item['title'] ?? 'This item'}" will be removed from your playlist. You can always add it again later.',
-          style: const TextStyle(color: Colors.white70, fontSize: 15),
-        ),
-        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.white70,
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-            ),
-            child: const Text('Keep'),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFE50914),
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-            ),
-            child: const Text('Remove'),
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Save'),
           ),
         ],
       ),
     );
 
-    if (confirmed == true) {
-      // Set deletion lock
-      setState(() {
-        _isDeletionInProgress = true;
-      });
-
-      try {
-        // Find the index of the item being deleted for focus restoration
-        final currentIndex = _allItems.indexWhere(
-          (playlistItem) => StorageService.computePlaylistDedupeKey(playlistItem) ==
-                           StorageService.computePlaylistDedupeKey(item)
-        );
-
-        final dedupeKey = StorageService.computePlaylistDedupeKey(item);
-        await StorageService.removePlaylistItemByKey(dedupeKey);
-        if (!mounted) return;
+    if (newTitle != null && newTitle.isNotEmpty && newTitle != currentTitle) {
+      await StorageService.renamePlaylistItem(dedupeKey, newTitle);
+      await _refresh();
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Removed from playlist')),
+          const SnackBar(content: Text('Item renamed')),
         );
-
-        // Set focus restoration flags BEFORE refresh
-        // Only restore focus if there will be items remaining after deletion
-        if (_allItems.length > 1 && currentIndex >= 0) {
-          setState(() {
-            // Calculate target index based on position of deleted item
-            // If deleting last item, focus on new last item (length - 2)
-            // Otherwise, focus stays at same index (which now contains next item)
-            if (currentIndex >= _allItems.length - 1) {
-              // Deleting the last item - focus previous item
-              _targetFocusIndex = _allItems.length - 2;
-            } else {
-              // Deleting item in middle or start - focus stays at same index
-              _targetFocusIndex = currentIndex;
-            }
-            _shouldRestoreFocus = true;
-          });
-        } else {
-          // If this is the last item, don't try to restore focus
-          setState(() {
-            _shouldRestoreFocus = false;
-            _targetFocusIndex = null;
-          });
-        }
-
-        await _refresh();
-      } finally {
-        // Always release deletion lock
-        if (mounted) {
-          setState(() {
-            _isDeletionInProgress = false;
-          });
-        }
       }
     }
   }
 
-  Future<void> _clearPlaylistProgress(Map<String, dynamic> item) async {
-    // Show confirmation dialog
-    final confirmed = await showDialog<bool>(
+
+  Widget _buildSortButton() {
+    const sortOptions = {
+      'recent': 'Recently Added',
+      'lastPlayed': 'Last Played',
+      'az': 'A → Z',
+      'za': 'Z → A',
+      'provider': 'Provider',
+      'kind': 'Type',
+      'progress': 'Progress',
+    };
+
+    return PopupMenuButton<String>(
+      onSelected: (value) async {
+        await StorageService.setPlaylistSortPreference(value);
+        setState(() => _sortMode = value);
+      },
+      offset: const Offset(0, 40),
+      color: const Color(0xFF1E293B),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: Colors.white.withOpacity(0.08)),
+      ),
+      itemBuilder: (ctx) => sortOptions.entries
+          .map((e) => PopupMenuItem<String>(
+                value: e.key,
+                child: Row(
+                  children: [
+                    if (_sortMode == e.key)
+                      const Icon(Icons.check, size: 16, color: Color(0xFF6366F1))
+                    else
+                      const SizedBox(width: 16),
+                    const SizedBox(width: 8),
+                    Text(e.value, style: const TextStyle(color: Colors.white, fontSize: 14)),
+                  ],
+                ),
+              ))
+          .toList(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white.withOpacity(0.08)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.sort, color: Colors.white70, size: 18),
+            const SizedBox(width: 6),
+            Text(
+              sortOptions[_sortMode] ?? 'Sort',
+              style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHistoryButton() {
+    return GestureDetector(
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const WatchHistoryScreen()),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white.withOpacity(0.08)),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.history, color: Colors.white70, size: 18),
+            SizedBox(width: 6),
+            Text('History', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _renameItem(Map<String, dynamic> item) async {
+    final dedupeKey = StorageService.computePlaylistDedupeKey(item);
+    final currentTitle = (item['title'] as String?) ?? '';
+    final controller = TextEditingController(text: currentTitle);
+
+    final newTitle = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0F172A),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(18),
           side: BorderSide(color: Colors.white.withOpacity(0.08)),
         ),
-        title: const Text(
-          'Clear watch progress?',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+        title: const Text('Rename', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Enter new title',
+            hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+            filled: true,
+            fillColor: const Color(0xFF1E293B),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+          ),
+          onSubmitted: (val) => Navigator.pop(ctx, val.trim()),
         ),
-        content: Text(
-          'All watch progress for "${item['title'] ?? 'this playlist'}" will be cleared. This cannot be undone.',
-          style: const TextStyle(color: Colors.white70, fontSize: 15),
-        ),
-        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.white70,
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-            ),
+            onPressed: () => Navigator.pop(ctx),
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFFF9800),
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-            ),
-            child: const Text('Clear Progress'),
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Save'),
           ),
         ],
       ),
     );
 
-    if (confirmed == true) {
-      final title = item['title'] as String? ?? '';
-      await StorageService.clearPlaylistProgress(title: title);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Watch progress cleared')),
-      );
+    if (newTitle != null && newTitle.isNotEmpty && newTitle != currentTitle) {
+      await StorageService.renamePlaylistItem(dedupeKey, newTitle);
       await _refresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Item renamed')),
+        );
+      }
     }
   }
-
 
   // Show search dialog
   void _showSearchDialog() {
@@ -1792,12 +2103,14 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
           if (_allItems.isEmpty) {
             return Column(
               children: [
-                // Search button row - for TV DPAD focus
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
                     children: [
+                      _buildSortButton(),
+                      const SizedBox(width: 8),
+                      _buildHistoryButton(),
+                      const Spacer(),
                       _buildSearchButton(''),
                     ],
                   ),
@@ -1830,18 +2143,30 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                     ),
                     cacheExtent: 500.0,
                     slivers: [
-                      // Search button row - navigable via DPAD
+                      // Toolbar row - sort, history, search
                       SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
                           child: Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
                             children: [
+                              _buildSortButton(),
+                              const SizedBox(width: 8),
+                              _buildHistoryButton(),
+                              const Spacer(),
                               _buildSearchButton(query),
                             ],
                           ),
                         ),
                       ),
+
+                      // Category filter chips
+                      if (_categories.isNotEmpty)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: _buildCategoryChips(),
+                          ),
+                        ),
 
                       // Favorites Section
                       if (favoriteItems.isNotEmpty) ...[
@@ -1860,6 +2185,8 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                               onItemDelete: _removeItem,
                               onItemClearProgress: _clearPlaylistProgress,
                               onItemToggleFavorite: _toggleFavorite,
+                              onItemRename: _renameItem,
+                              onItemAssignCategory: _showAssignCategoryDialog,
                               shouldAutofocusFirst: false,
                               targetFocusIndex: _shouldRestoreFocus ? _targetFocusIndex : null,
                               shouldRestoreFocus: _shouldRestoreFocus,
@@ -1897,6 +2224,8 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                             onItemDelete: _removeItem,
                             onItemClearProgress: _clearPlaylistProgress,
                             onItemToggleFavorite: _toggleFavorite,
+                            onItemRename: _renameItem,
+                            onItemAssignCategory: _showAssignCategoryDialog,
                             shouldAutofocusFirst: false,
                             targetFocusIndex: _shouldRestoreFocus && favoriteItems.isEmpty ? _targetFocusIndex : null,
                             shouldRestoreFocus: _shouldRestoreFocus && favoriteItems.isEmpty,
@@ -1922,8 +2251,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                       const SliverToBoxAdapter(child: SizedBox(height: 40)),
                     ],
                   ),
-                ),
-              );
+                );
             },
           );
         },
@@ -1931,171 +2259,132 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _buildSearchButton(String currentQuery) {
-    final hasActiveSearch = currentQuery.isNotEmpty;
+  Widget _buildSortButton() {
+    const sortOptions = {
+      'recent': 'Recently Added',
+      'lastPlayed': 'Last Played',
+      'az': 'A → Z',
+      'za': 'Z → A',
+      'provider': 'Provider',
+      'kind': 'Type',
+      'progress': 'Progress',
+    };
 
-    return Focus(
-      focusNode: _searchFocusNode,
-      autofocus: true, // Search button gets initial focus
-      onKeyEvent: (node, event) {
-        if (event is KeyDownEvent) {
-          // Handle left arrow - go to last card in Favorites/All Items, then sidebar
-          if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-            // Try favorites section last item first
-            if (_favoritesSectionKey.currentState != null &&
-                _favoritesSectionKey.currentState!.hasItems) {
-              if (_favoritesSectionKey.currentState!.requestFocusOnLastItem()) {
-                return KeyEventResult.handled;
-              }
-            }
-            // Try all items section last item
-            if (_allItemsSectionKey.currentState != null &&
-                _allItemsSectionKey.currentState!.hasItems) {
-              if (_allItemsSectionKey.currentState!.requestFocusOnLastItem()) {
-                return KeyEventResult.handled;
-              }
-            }
-            // Fallback to sidebar
-            if (MainPageBridge.focusTvSidebar != null) {
-              MainPageBridge.focusTvSidebar!();
-              return KeyEventResult.handled;
-            }
-          }
-          // Handle down arrow - go to first card in Favorites, then All Items
-          if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
-            // Try favorites section first item
-            if (_favoritesSectionKey.currentState != null &&
-                _favoritesSectionKey.currentState!.hasItems) {
-              if (_favoritesSectionKey.currentState!.requestFocusOnFirstItem()) {
-                return KeyEventResult.handled;
-              }
-            }
-            // Try all items section first item
-            if (_allItemsSectionKey.currentState != null &&
-                _allItemsSectionKey.currentState!.hasItems) {
-              if (_allItemsSectionKey.currentState!.requestFocusOnFirstItem()) {
-                return KeyEventResult.handled;
-              }
-            }
-          }
-          if (event.logicalKey == LogicalKeyboardKey.select ||
-              event.logicalKey == LogicalKeyboardKey.enter) {
-            _showSearchDialog();
-            return KeyEventResult.handled;
-          }
-        }
-        return KeyEventResult.ignored;
+    return PopupMenuButton<String>(
+      onSelected: (value) async {
+        await StorageService.setPlaylistSortPreference(value);
+        setState(() => _sortMode = value);
       },
-      child: Builder(
-        builder: (context) {
-          final isFocused = Focus.of(context).hasFocus;
-          return GestureDetector(
-            onTap: _showSearchDialog,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              padding: EdgeInsets.symmetric(
-                horizontal: hasActiveSearch ? 12 : 10,
-                vertical: 10,
-              ),
-              decoration: BoxDecoration(
-                color: hasActiveSearch
-                    ? const Color(0xFF6366F1).withValues(alpha: 0.2)
-                    : const Color(0xFF1E293B).withValues(alpha: 0.9),
-                borderRadius: BorderRadius.circular(hasActiveSearch ? 20 : 12),
-                border: Border.all(
-                  color: isFocused
-                      ? const Color(0xFF6366F1)
-                      : hasActiveSearch
-                          ? const Color(0xFF6366F1).withValues(alpha: 0.5)
-                          : Colors.white.withValues(alpha: 0.1),
-                  width: isFocused ? 2 : 1,
-                ),
-                boxShadow: isFocused ? [
-                  BoxShadow(
-                    color: const Color(0xFF6366F1).withValues(alpha: 0.3),
-                    blurRadius: 12,
-                    spreadRadius: 1,
-                  ),
-                ] : null,
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.search_rounded,
-                    color: hasActiveSearch
-                        ? const Color(0xFF6366F1)
-                        : Colors.white.withValues(alpha: 0.7),
-                    size: 20,
-                  ),
-                  if (hasActiveSearch) ...[
+      offset: const Offset(0, 40),
+      color: const Color(0xFF1E293B),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: Colors.white.withOpacity(0.08)),
+      ),
+      itemBuilder: (ctx) => sortOptions.entries
+          .map((e) => PopupMenuItem<String>(
+                value: e.key,
+                child: Row(
+                  children: [
+                    if (_sortMode == e.key)
+                      const Icon(Icons.check, size: 16, color: Color(0xFF6366F1))
+                    else
+                      const SizedBox(width: 16),
                     const SizedBox(width: 8),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 120),
-                      child: Text(
-                        currentQuery,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    GestureDetector(
-                      onTap: () {
-                        _searchController.clear();
-                        _searchQuery.value = '';
-                      },
-                      child: Icon(
-                        Icons.close_rounded,
-                        color: Colors.white.withValues(alpha: 0.6),
-                        size: 16,
-                      ),
-                    ),
+                    Text(e.value, style: const TextStyle(color: Colors.white, fontSize: 14)),
                   ],
-                ],
-              ),
+                ),
+              ))
+          .toList(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white.withOpacity(0.08)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.sort, color: Colors.white70, size: 18),
+            const SizedBox(width: 6),
+            Text(
+              sortOptions[_sortMode] ?? 'Sort',
+              style: const TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500),
             ),
-          );
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHistoryButton() {
+    return GestureDetector(
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const WatchHistoryScreen()),
+        );
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white.withOpacity(0.08)),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.history, color: Colors.white70, size: 18),
+            SizedBox(width: 6),
+            Text('History', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Show search dialog
+  void _showSearchDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => _SearchDialog(
+        initialQuery: _searchController.text,
+        onSearch: (query) {
+          _searchController.text = query;
+          _searchQuery.value = query.toLowerCase().trim();
+        },
+        onClear: () {
+          _searchController.clear();
+          _searchQuery.value = '';
         },
       ),
     );
   }
 
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+  // ─── Category Management ───
+
+  Widget _buildCategoryChips() {
+    if (_categories.isEmpty) return const SizedBox.shrink();
+    return SizedBox(
+      height: 38,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
         children: [
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E293B).withValues(alpha: 0.5),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.video_library_outlined,
-              size: 56,
-              color: Colors.white.withValues(alpha: 0.3),
-            ),
-          ),
-          const SizedBox(height: 20),
-          Text(
-            'No items in playlist',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.6),
-              fontSize: 17,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Add items from your debrid downloads',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.35),
-              fontSize: 14,
+          _categoryChip('All', null),
+          for (final cat in _categories) _categoryChip(cat, cat),
+          const SizedBox(width: 4),
+          GestureDetector(
+            onTap: _showManageCategoriesDialog,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.06),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white.withOpacity(0.1)),
+              ),
+              child: const Icon(Icons.settings, color: Colors.white38, size: 16),
             ),
           ),
         ],
@@ -2103,47 +2392,251 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
     );
   }
 
-  Widget _buildNoResultsState(String query) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E293B).withValues(alpha: 0.5),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.search_off_rounded,
-              size: 56,
-              color: Colors.white.withValues(alpha: 0.3),
+  Widget _categoryChip(String label, String? value) {
+    final selected = _selectedCategory == value;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: GestureDetector(
+        onTap: () => setState(() => _selectedCategory = value),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xFF6366F1) : Colors.white.withOpacity(0.06),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: selected ? const Color(0xFF6366F1) : Colors.white.withOpacity(0.08),
             ),
           ),
-          const SizedBox(height: 20),
-          Text(
-            'No results found',
+          child: Text(
+            label,
             style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.6),
-              fontSize: 17,
-              fontWeight: FontWeight.w500,
+              color: selected ? Colors.white : Colors.white70,
+              fontSize: 13,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
             ),
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Try searching for "$query" differently',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.35),
-              fontSize: 14,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showManageCategoriesDialog() async {
+    final controller = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Manage Categories', style: TextStyle(color: Colors.white)),
+          content: SizedBox(
+            width: 300,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: controller,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          hintText: 'New category...',
+                          hintStyle: TextStyle(color: Colors.white.withOpacity(0.4)),
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: const Icon(Icons.add_circle, color: Color(0xFF6366F1)),
+                      onPressed: () async {
+                        final name = controller.text.trim();
+                        if (name.isNotEmpty && !_categories.contains(name)) {
+                          await StorageService.addPlaylistCategory(name);
+                          controller.clear();
+                          final cats = await StorageService.getPlaylistCategories();
+                          setDialogState(() {});
+                          setState(() => _categories = cats);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 200),
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final cat in _categories)
+                        ListTile(
+                          dense: true,
+                          title: Text(cat, style: const TextStyle(color: Colors.white)),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                            onPressed: () async {
+                              await StorageService.removePlaylistCategory(cat);
+                              final cats = await StorageService.getPlaylistCategories();
+                              setDialogState(() {});
+                              setState(() {
+                                _categories = cats;
+                                if (_selectedCategory == cat) _selectedCategory = null;
+                              });
+                            },
+                          ),
+                        ),
+                      if (_categories.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Text('No categories yet', style: TextStyle(color: Colors.white38)),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+  }
+
+  Future<void> _showAssignCategoryDialog(Map<String, dynamic> item) async {
+    final dedupeKey = StorageService.computePlaylistDedupeKey(item);
+    var assigned = List<String>.from(_itemCategoriesMap[dedupeKey] ?? []);
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Assign Categories', style: TextStyle(color: Colors.white)),
+          content: SizedBox(
+            width: 280,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_categories.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('Create categories first from the playlist toolbar',
+                        style: TextStyle(color: Colors.white54, fontSize: 13)),
+                  )
+                else
+                  for (final cat in _categories)
+                    CheckboxListTile(
+                      dense: true,
+                      title: Text(cat, style: const TextStyle(color: Colors.white)),
+                      value: assigned.contains(cat),
+                      activeColor: const Color(0xFF6366F1),
+                      onChanged: (val) {
+                        setDialogState(() {
+                          if (val == true) {
+                            assigned.add(cat);
+                          } else {
+                            assigned.remove(cat);
+                          }
+                        });
+                      },
+                    ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                await StorageService.setItemCategories(dedupeKey, assigned);
+                setState(() => _itemCategoriesMap[dedupeKey] = assigned);
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _renameItem(Map<String, dynamic> item) async {
+    final dedupeKey = StorageService.computePlaylistDedupeKey(item);
+    final currentTitle = (item['title'] as String?) ?? '';
+    final controller = TextEditingController(text: currentTitle);
+
+    final newTitle = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF0F172A),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: BorderSide(color: Colors.white.withOpacity(0.08)),
+        ),
+        title: const Text('Rename', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: 'Enter new title',
+            hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+            filled: true,
+            fillColor: const Color(0xFF1E293B),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+          ),
+          onSubmitted: (val) => Navigator.pop(ctx, val.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Save'),
           ),
         ],
       ),
     );
+
+    if (newTitle != null && newTitle.isNotEmpty && newTitle != currentTitle) {
+      await StorageService.renamePlaylistItem(dedupeKey, newTitle);
+      await _refresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Item renamed')),
+        );
+      }
+    }
+  }
+  
+  // Custom methods for managing categories
+  Future<void> _refreshCategories() async {
+    final cats = await StorageService.getPlaylistCategories();
+    setState(() {
+      _categories = cats;
+      // Rebuild item category map
+      _itemCategoriesMap = {};
+      for (final item in _allItems) {
+        final key = StorageService.computePlaylistDedupeKey(item);
+        _itemCategoriesMap[key] = StorageService.getItemCategories(key);
+      }
+    });
   }
 }
-
-/// Search dialog for playlist search - TV optimized
+  
+// Search dialog for playlist search - TV optimized
 class _SearchDialog extends StatefulWidget {
   final String initialQuery;
   final void Function(String query) onSearch;
@@ -2275,7 +2768,7 @@ class _SearchDialogState extends State<_SearchDialog> {
                 decoration: InputDecoration(
                 hintText: 'Enter search term...',
                 hintStyle: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.4),
+                  color: Colors.white.withOpacity(0.4),
                 ),
                 filled: true,
                 fillColor: const Color(0xFF0F172A),
