@@ -2791,6 +2791,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       if (!isTv) {
         SystemChrome.setPreferredOrientations(<DeviceOrientation>[
           DeviceOrientation.portraitUp,
+		  DeviceOrientation.portraitDown,
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
         ]);
       }
     });
