@@ -3609,6 +3609,17 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
             child: Text(_isAllSelected ? 'Deselect All' : 'Select All'),
           ),
           const SizedBox(width: 8),
+          if (_selectedView == _DebridDownloadsView.torrents)
+            FilledButton.icon(
+              onPressed: count > 0 ? _handleAddSelectedToPlaylist : null,
+              icon: const Icon(Icons.playlist_add, size: 18),
+              label: const Text('Playlist'),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.blue,
+                disabledBackgroundColor: Colors.blue.withValues(alpha: 0.3),
+              ),
+            ),
+          const SizedBox(width: 8),
           FilledButton.icon(
             focusNode: _deleteButtonFocusNode,
             onPressed: count > 0 ? _handleDeleteSelected : null,
