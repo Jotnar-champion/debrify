@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
 
@@ -163,6 +164,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
 
   // Search state (for folder browsing mode)
   bool _isSearchActive = false;
+  Timer? _searchDebounceTimer;
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode(debugLabel: 'rd-search');
   final FocusNode _searchButtonFocusNode = FocusNode(debugLabel: 'rd-search-button');
@@ -177,6 +179,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
   // Grid view state (folder browser)
   bool _isGridView = false;
   double _gridCrossAxisCount = 2.0;
+  bool _showScrollToTop = false;
 
   // Scroll position memory
   final ScrollController _folderScrollController = ScrollController();
@@ -241,6 +244,15 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     _loadApiKeyAndData();
     _torrentScrollController.addListener(_onTorrentScroll);
     _downloadScrollController.addListener(_onDownloadScroll);
+    _folderScrollController.addListener(_updateScrollToTop);
+
+    // Load persisted grid view preferences
+    StorageService.getRdGridView().then((v) {
+      if (mounted) setState(() => _isGridView = v);
+    });
+    StorageService.getRdGridCrossAxis().then((v) {
+      if (mounted) setState(() => _gridCrossAxisCount = v);
+    });
 
     // Register back navigation handler for folder navigation
     if (widget.isPushedRoute) {
@@ -386,6 +398,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     _torrentSearchFocusNode.dispose();
     _torrentSearchClearFocusNode.dispose();
     _downloadSearchController.dispose();
+    _searchDebounceTimer?.cancel();
 
     super.dispose();
   }
@@ -445,6 +458,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         _loadMoreTorrents();
       }
     }
+    _updateScrollToTop();
   }
 
   void _onDownloadScroll() {
@@ -454,6 +468,34 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         _loadMoreDownloads();
       }
     }
+    _updateScrollToTop();
+  }
+
+  void _updateScrollToTop() {
+    final show = [
+      _torrentScrollController,
+      _downloadScrollController,
+      _folderScrollController,
+    ].any((c) => c.hasClients && c.offset > 300);
+    if (_showScrollToTop != show) setState(() => _showScrollToTop = show);
+  }
+
+  void _scrollToTop() {
+    for (final c in [
+      _torrentScrollController,
+      _downloadScrollController,
+      _folderScrollController,
+    ]) {
+      if (c.hasClients && c.offset > 0) {
+        c.animateTo(0, duration: const Duration(milliseconds: 400), curve: Curves.easeOut);
+      }
+    }
+  }
+
+  void _toggleGridView() {
+    final next = !_isGridView;
+    setState(() => _isGridView = next);
+    StorageService.setRdGridView(next);
   }
 
   Future<void> _loadApiKeyAndData() async {
@@ -2185,6 +2227,51 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     }
   }
 
+  void _navigateToPathDepth(int targetDepth) {
+    while (_folderPath.length > targetDepth) {
+      _navigateUp();
+    }
+  }
+
+  Widget _buildBreadcrumb() {
+    if (_currentTorrentId == null) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final items = [
+      _currentTorrent?.filename ?? 'Root',
+      ..._folderPath,
+    ];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: [
+          for (int i = 0; i < items.length; i++) ...[
+            if (i > 0)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: Icon(Icons.chevron_right, size: 16, color: Colors.grey[600]),
+              ),
+            GestureDetector(
+              onTap: i < items.length - 1 ? () => _navigateToPathDepth(i) : null,
+              child: Text(
+                items[i],
+                style: TextStyle(
+                  color: i == items.length - 1
+                      ? theme.colorScheme.onSurface
+                      : theme.colorScheme.primary,
+                  fontSize: 13,
+                  fontWeight: i == items.length - 1 ? FontWeight.w600 : FontWeight.normal,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   String _getCurrentFolderTitle() {
     if (_currentTorrentId == null) return '';
     if (_folderPath.isEmpty) {
@@ -2571,8 +2658,18 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 ),
                 style: const TextStyle(color: Colors.white),
-                onChanged: _performSearch,
-                onSubmitted: (_) => _searchFocusNode.unfocus(),
+                onChanged: (query) {
+                  _searchDebounceTimer?.cancel();
+                  _searchDebounceTimer = Timer(
+                    const Duration(milliseconds: 250),
+                    () => _performSearch(query),
+                  );
+                },
+                onSubmitted: (_) {
+                  _searchDebounceTimer?.cancel();
+                  _performSearch(_searchController.text);
+                  _searchFocusNode.unfocus();
+                },
               ),
             ),
           ),
@@ -2647,6 +2744,23 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     if (_searchResults.isEmpty) {
       return const Center(
         child: Text('No files found', style: TextStyle(color: Colors.grey)),
+      );
+    }
+
+    if (_isGridView) {
+      final crossAxis = _gridCrossAxisCount.round().clamp(1, 5);
+      return GridView.builder(
+        padding: const EdgeInsets.all(16),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxis,
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: _searchResults.length,
+        itemBuilder: (context, index) {
+          return _buildNodeGridCard(_searchResults[index].node, index);
+        },
       );
     }
 
@@ -2770,6 +2884,13 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
               title: const Text('Select Source from Real-Debrid'),
             )
           : null,
+      floatingActionButton: _showScrollToTop
+          ? FloatingActionButton.small(
+              onPressed: _scrollToTop,
+              tooltip: 'Back to top',
+              child: const Icon(Icons.arrow_upward),
+            )
+          : null,
       body: FocusTraversalGroup(
         policy: OrderedTraversalPolicy(),
         child: Column(
@@ -2882,7 +3003,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
             ),
           // Grid/List view toggle — long-press opens size dialog
           InkWell(
-            onTap: () => setState(() => _isGridView = !_isGridView),
+            onTap: _toggleGridView,
             onLongPress: _showGridSizeDialog,
             borderRadius: BorderRadius.circular(20),
             child: Tooltip(
@@ -2909,9 +3030,17 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           ),
         ],
       ),
+      floatingActionButton: _showScrollToTop
+          ? FloatingActionButton.small(
+              onPressed: _scrollToTop,
+              tooltip: 'Back to top',
+              child: const Icon(Icons.arrow_upward),
+            )
+          : null,
       body: Column(
         children: [
           _buildViewModeDropdown(),
+          _buildBreadcrumb(),
           if (_isSearchActive && showSearch) _buildSearchBar(),
           Expanded(
             child: FocusTraversalGroup(
@@ -3029,6 +3158,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
             TextButton(
               onPressed: () {
                 setState(() => _gridCrossAxisCount = tempCount);
+                StorageService.setRdGridCrossAxis(tempCount);
                 Navigator.of(ctx).pop();
               },
               style: TextButton.styleFrom(foregroundColor: const Color(0xFF6366F1)),
@@ -3770,37 +3900,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
                       ),
                     ),
                     InkWell(
-                      onTap: () => setState(() => _isGridView = !_isGridView),
-                      onLongPress: _showGridSizeDialog,
-                      borderRadius: BorderRadius.circular(20),
-                      child: Tooltip(
-                        triggerMode: TooltipTriggerMode.manual,
-                        message: _isGridView
-                            ? 'List view (long-press to set grid size)'
-                            : 'Grid view (long-press to set grid size)',
-                        child: Padding(
-                          padding: EdgeInsets.all(isCompact ? 6.0 : 8.0),
-                          child: Icon(
-                            _isGridView ? Icons.list_rounded : Icons.grid_view_rounded,
-                            size: iconSize,
-                            color: _isGridView
-                                ? theme.colorScheme.primary
-                                : theme.colorScheme.onSurface,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildDownloadToolbar() {
+                      onTap: _toggleGridView,
     final theme = Theme.of(context);
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -3892,7 +3992,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
                       ),
                     ),
                     InkWell(
-                      onTap: () => setState(() => _isGridView = !_isGridView),
+                      onTap: _toggleGridView,
                       onLongPress: _showGridSizeDialog,
                       borderRadius: BorderRadius.circular(20),
                       child: Tooltip(
