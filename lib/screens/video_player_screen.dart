@@ -3940,15 +3940,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // Wakelock not supported on this platform (e.g., Linux)
     }
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    // Restore all orientations synchronously so the app respects device
+    // auto-rotate immediately after the player exits.
+    SystemChrome.setPreferredOrientations(<DeviceOrientation>[
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    // On Android TV keep landscape-only (override the above).
     AndroidNativeDownloader.isTelevision().then((isTv) {
-      if (!isTv) {
-        // Restore all orientations so the app respects device auto-rotate
-        // after the player exits (matches main.dart's _initOrientation).
-        // Locking portraitUp here forced users to flip the device back to
-        // browse lists after watching in landscape.
+      if (isTv) {
         SystemChrome.setPreferredOrientations(<DeviceOrientation>[
-          DeviceOrientation.portraitUp,
-          DeviceOrientation.portraitDown,
           DeviceOrientation.landscapeLeft,
           DeviceOrientation.landscapeRight,
         ]);
@@ -4743,8 +4746,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   Future<void> _toggleOrientation() async {
     if (_landscapeLocked) {
+      // Unlock: allow all orientations (device auto-rotate)
       await SystemChrome.setPreferredOrientations(<DeviceOrientation>[
         DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
       ]);
       _landscapeLocked = false;
     } else {
