@@ -128,6 +128,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
   // Grid view state (folder browser)
   bool _isGridView = false;
   double _gridCrossAxisCount = 2.0;
+  bool _showScrollToTop = false;
 
   // Scroll position memory
   final ScrollController _folderScrollController = ScrollController();
@@ -213,6 +214,16 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
 
     _scrollController.addListener(_onScroll);
     _webDownloadScrollController.addListener(_onWebDownloadScroll);
+    _folderScrollController.addListener(_updateScrollToTop);
+
+    // Load persisted grid view preferences
+    StorageService.getTorboxGridView().then((v) {
+      if (mounted) setState(() => _isGridView = v);
+    });
+    StorageService.getTorboxGridCrossAxis().then((v) {
+      if (mounted) setState(() => _gridCrossAxisCount = v);
+    });
+
     _pendingInitialTorrent = widget.initialTorrentToOpen;
 
     if (widget.selectSourceMode &&
@@ -1109,6 +1120,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
         !_isLoading) {
       _loadMore();
     }
+    _updateScrollToTop();
   }
 
   void _onWebDownloadScroll() {
@@ -1119,6 +1131,34 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
         !_isLoadingWebDownloads) {
       _loadMoreWebDownloads();
     }
+    _updateScrollToTop();
+  }
+
+  void _updateScrollToTop() {
+    final show = [
+      _scrollController,
+      _webDownloadScrollController,
+      _folderScrollController,
+    ].any((c) => c.hasClients && c.offset > 300);
+    if (_showScrollToTop != show) setState(() => _showScrollToTop = show);
+  }
+
+  void _scrollToTop() {
+    for (final c in [
+      _scrollController,
+      _webDownloadScrollController,
+      _folderScrollController,
+    ]) {
+      if (c.hasClients && c.offset > 0) {
+        c.animateTo(0, duration: const Duration(milliseconds: 400), curve: Curves.easeOut);
+      }
+    }
+  }
+
+  void _toggleGridView() {
+    final next = !_isGridView;
+    setState(() => _isGridView = next);
+    StorageService.setTorboxGridView(next);
   }
 
   Future<void> _loadApiKeyAndTorrents() async {
@@ -5231,6 +5271,49 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     }
   }
 
+  void _navigateToPathDepth(int targetDepth) {
+    while (_currentPath.length > targetDepth && !_isAtRoot) {
+      _navigateUp();
+    }
+  }
+
+  Widget _buildBreadcrumb() {
+    if (_isAtRoot) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    final rootName = _currentTorrent?.name ?? _currentWebDownload?.name ?? 'Root';
+    final items = [rootName, ..._currentPath];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: [
+          for (int i = 0; i < items.length; i++) ...[
+            if (i > 0)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: Icon(Icons.chevron_right, size: 16, color: Colors.grey[600]),
+              ),
+            GestureDetector(
+              onTap: i < items.length - 1 ? () => _navigateToPathDepth(i) : null,
+              child: Text(
+                items[i],
+                style: TextStyle(
+                  color: i == items.length - 1
+                      ? theme.colorScheme.onSurface
+                      : theme.colorScheme.primary,
+                  fontSize: 13,
+                  fontWeight: i == items.length - 1 ? FontWeight.w600 : FontWeight.normal,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   /// Check if we're at root level (torrent/web download list)
   bool get _isAtRoot => _currentTorrent == null && _currentWebDownload == null;
 
@@ -5921,6 +6004,23 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
       );
     }
 
+    if (_isGridView) {
+      final crossAxis = _gridCrossAxisCount.round().clamp(1, 5);
+      return GridView.builder(
+        padding: const EdgeInsets.all(16),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxis,
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: _searchResults.length,
+        itemBuilder: (context, index) {
+          return _buildFileOrFolderGridCard(_searchResults[index].node, index);
+        },
+      );
+    }
+
     return ListView.builder(
       padding: const EdgeInsets.all(16),
       itemCount: _searchResults.length,
@@ -6080,7 +6180,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
             ),
           // Grid/List toggle — long-press opens size dialog
           InkWell(
-            onTap: () => setState(() => _isGridView = !_isGridView),
+            onTap: _toggleGridView,
             onLongPress: _showGridSizeDialog,
             borderRadius: BorderRadius.circular(20),
             child: Tooltip(
@@ -6109,6 +6209,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
             _buildWebDownloadSearchBar(),
           if (_isAtRoot && _isSelectionMode) _buildSelectionBar(),
           if (!_isAtRoot) _buildViewModeDropdown(),
+          if (!_isAtRoot) _buildBreadcrumb(),
           if (_isSearchActive && showSearch) _buildSearchBar(),
           Expanded(
             child: _isTorrentSearchActive && _isAtRoot
@@ -6122,6 +6223,13 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
           ),
         ],
       ),
+      floatingActionButton: _showScrollToTop
+          ? FloatingActionButton.small(
+              onPressed: _scrollToTop,
+              tooltip: 'Back to top',
+              child: const Icon(Icons.arrow_upward),
+            )
+          : null,
     );
   }
 
@@ -7083,6 +7191,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
             TextButton(
               onPressed: () {
                 setState(() => _gridCrossAxisCount = tempCount);
+                StorageService.setTorboxGridCrossAxis(tempCount);
                 Navigator.of(ctx).pop();
               },
               style: TextButton.styleFrom(foregroundColor: const Color(0xFF6366F1)),
@@ -7736,7 +7845,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
                       ),
                     ],
                     InkWell(
-                      onTap: () => setState(() => _isGridView = !_isGridView),
+                      onTap: _toggleGridView,
                       onLongPress: _showGridSizeDialog,
                       borderRadius: BorderRadius.circular(20),
                       child: Tooltip(
