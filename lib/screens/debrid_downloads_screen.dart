@@ -2881,16 +2881,21 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
               tooltip: _isSearchActive ? 'Close search' : 'Search files',
             ),
           // Grid/List view toggle — long-press opens size dialog
-          Tooltip(
-            message: _isGridView
-                ? 'List view  (long-press to resize grid)'
-                : 'Grid view',
-            child: GestureDetector(
-              onLongPress: _isGridView ? _showGridSizeDialog : null,
-              child: IconButton(
-                icon: Icon(_isGridView ? Icons.list_rounded : Icons.grid_view_rounded),
-                onPressed: () => setState(() => _isGridView = !_isGridView),
-                visualDensity: VisualDensity.compact,
+          InkWell(
+            onTap: () => setState(() => _isGridView = !_isGridView),
+            onLongPress: _showGridSizeDialog,
+            borderRadius: BorderRadius.circular(20),
+            child: Tooltip(
+              triggerMode: TooltipTriggerMode.manual,
+              message: _isGridView
+                  ? 'List view (long-press to set grid size)'
+                  : 'Grid view (long-press to set grid size)',
+              child: Padding(
+                padding: const EdgeInsets.all(10.0),
+                child: Icon(
+                  _isGridView ? Icons.list_rounded : Icons.grid_view_rounded,
+                  size: 24,
+                ),
               ),
             ),
           ),
@@ -3146,6 +3151,171 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
                         Text('Copy Link'),
                       ]),
                     ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTorrentGridCard(RDTorrent torrent, int index) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF1F2A44), Color(0xFF111C32)],
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08), width: 1),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => _navigateIntoTorrent(torrent),
+        child: Stack(
+          children: [
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.folder_rounded, size: 40, color: Colors.amber),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    torrent.filename,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${torrent.links.length} ${torrent.links.length == 1 ? 'file' : 'files'}',
+                  style: TextStyle(color: Colors.grey[500], fontSize: 10),
+                ),
+              ],
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert, size: 16, color: Colors.white.withValues(alpha: 0.5)),
+                tooltip: 'More options',
+                onSelected: (value) {
+                  switch (value) {
+                    case 'open':
+                      _navigateIntoTorrent(torrent);
+                    case 'play':
+                      _handlePlayMultiFileTorrent(torrent);
+                    case 'download':
+                      _handleDownloadTorrent(torrent);
+                    case 'add_to_playlist':
+                      _handleAddTorrentToPlaylist(torrent);
+                    case 'delete':
+                      _handleDeleteTorrent(torrent);
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(value: 'open', child: Row(children: [Icon(Icons.folder_open, size: 18, color: Colors.amber), SizedBox(width: 12), Text('Open')])),
+                  const PopupMenuItem(value: 'play', child: Row(children: [Icon(Icons.play_arrow_rounded, size: 18, color: Colors.green), SizedBox(width: 12), Text('Play')])),
+                  const PopupMenuItem(value: 'download', child: Row(children: [Icon(Icons.download, size: 18, color: Colors.green), SizedBox(width: 12), Text('Download')])),
+                  const PopupMenuItem(value: 'add_to_playlist', child: Row(children: [Icon(Icons.playlist_add, size: 18, color: Colors.blue), SizedBox(width: 12), Text('Add to Playlist')])),
+                  const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 12), Text('Delete')])),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDownloadGridCard(DebridDownload download, int index) {
+    final canStream = download.streamable == 1;
+    final isVideo = FileUtils.isVideoFile(download.filename);
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF1F2A44), Color(0xFF111C32)],
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08), width: 1),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: canStream
+            ? () => _handlePlayDownload(download)
+            : () => _handleQueueDownload(download),
+        child: Stack(
+          children: [
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  canStream || isVideo
+                      ? Icons.play_circle_rounded
+                      : Icons.insert_drive_file_rounded,
+                  size: 40,
+                  color: canStream || isVideo
+                      ? const Color(0xFF22C55E)
+                      : Colors.blueGrey,
+                ),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    download.filename,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  Formatters.formatFileSize(download.filesize),
+                  style: TextStyle(color: Colors.grey[500], fontSize: 10),
+                ),
+              ],
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert, size: 16, color: Colors.white.withValues(alpha: 0.5)),
+                tooltip: 'More options',
+                onSelected: (value) {
+                  switch (value) {
+                    case 'play':
+                      _handlePlayDownload(download);
+                    case 'download':
+                      _handleQueueDownload(download);
+                    case 'copy':
+                      _handleDownloadAction(download);
+                    case 'delete':
+                      _handleDeleteDownload(download);
+                  }
+                },
+                itemBuilder: (context) => [
+                  if (canStream)
+                    const PopupMenuItem(value: 'play', child: Row(children: [Icon(Icons.play_arrow, size: 18, color: Colors.blue), SizedBox(width: 12), Text('Play')])),
+                  const PopupMenuItem(value: 'download', child: Row(children: [Icon(Icons.download, size: 18, color: Colors.green), SizedBox(width: 12), Text('Download')])),
+                  const PopupMenuItem(value: 'copy', child: Row(children: [Icon(Icons.link, size: 18, color: Colors.orange), SizedBox(width: 12), Text('Copy Link')])),
+                  const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 12), Text('Delete')])),
                 ],
               ),
             ),
@@ -3599,6 +3769,27 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
                         visualDensity: VisualDensity.compact,
                       ),
                     ),
+                    InkWell(
+                      onTap: () => setState(() => _isGridView = !_isGridView),
+                      onLongPress: _showGridSizeDialog,
+                      borderRadius: BorderRadius.circular(20),
+                      child: Tooltip(
+                        triggerMode: TooltipTriggerMode.manual,
+                        message: _isGridView
+                            ? 'List view (long-press to set grid size)'
+                            : 'Grid view (long-press to set grid size)',
+                        child: Padding(
+                          padding: EdgeInsets.all(isCompact ? 6.0 : 8.0),
+                          child: Icon(
+                            _isGridView ? Icons.list_rounded : Icons.grid_view_rounded,
+                            size: iconSize,
+                            color: _isGridView
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -3698,6 +3889,27 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
                             ? theme.colorScheme.primary
                             : theme.colorScheme.onSurface,
                         visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () => setState(() => _isGridView = !_isGridView),
+                      onLongPress: _showGridSizeDialog,
+                      borderRadius: BorderRadius.circular(20),
+                      child: Tooltip(
+                        triggerMode: TooltipTriggerMode.manual,
+                        message: _isGridView
+                            ? 'List view (long-press to set grid size)'
+                            : 'Grid view (long-press to set grid size)',
+                        child: Padding(
+                          padding: EdgeInsets.all(isCompact ? 6.0 : 8.0),
+                          child: Icon(
+                            _isGridView ? Icons.list_rounded : Icons.grid_view_rounded,
+                            size: iconSize,
+                            color: _isGridView
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurface,
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -3802,28 +4014,42 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         color: Colors.white,
         backgroundColor: const Color(0xFF1E293B),
         strokeWidth: 3,
-        child: ListView.builder(
-          controller: _torrentScrollController,
-          padding: const EdgeInsets.all(16),
-          itemCount: _torrents.length + (_hasMoreTorrents ? 1 : 0),
-          cacheExtent: 200.0, // Pre-cache items for smoother scrolling
-          addRepaintBoundaries: true, // Optimize repainting
-          itemBuilder: (context, index) {
-            if (index == _torrents.length) {
-              // Loading more indicator
-              return const Padding(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
+        child: _isGridView
+            ? GridView.builder(
+                controller: _torrentScrollController,
+                padding: const EdgeInsets.all(12),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: _gridCrossAxisCount.round().clamp(1, 5),
+                  crossAxisSpacing: 8,
+                  mainAxisSpacing: 8,
+                  childAspectRatio: 0.82,
+                ),
+                itemCount: _torrents.length,
+                itemBuilder: (context, index) {
+                  return _buildTorrentGridCard(_torrents[index], index);
+                },
+              )
+            : ListView.builder(
+                controller: _torrentScrollController,
+                padding: const EdgeInsets.all(16),
+                itemCount: _torrents.length + (_hasMoreTorrents ? 1 : 0),
+                cacheExtent: 200.0,
+                addRepaintBoundaries: true,
+                itemBuilder: (context, index) {
+                  if (index == _torrents.length) {
+                    return const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
 
-            final torrent = _torrents[index];
-            return KeyedSubtree(
-              key: ValueKey(torrent.id),
-              child: _buildTorrentCard(torrent, index),
-            );
-          },
-        ),
+                  final torrent = _torrents[index];
+                  return KeyedSubtree(
+                    key: ValueKey(torrent.id),
+                    child: _buildTorrentCard(torrent, index),
+                  );
+                },
+              ),
       );
     }
 
@@ -4077,28 +4303,43 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         color: Colors.white,
         backgroundColor: const Color(0xFF1E293B),
         strokeWidth: 3,
-        child: ListView.builder(
-          controller: _downloadScrollController,
-          padding: const EdgeInsets.all(16),
-          itemCount: displayedDownloads.length +
-              (!_isDownloadSearchActive && _hasMoreDownloads ? 1 : 0),
-          cacheExtent: 200.0,
-          addRepaintBoundaries: true,
-          itemBuilder: (context, index) {
-            if (index == displayedDownloads.length) {
-              return const Padding(
-                padding: EdgeInsets.all(16),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
+        child: _isGridView
+            ? GridView.builder(
+                controller: _downloadScrollController,
+                padding: const EdgeInsets.all(12),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: _gridCrossAxisCount.round().clamp(1, 5),
+                  crossAxisSpacing: 8,
+                  mainAxisSpacing: 8,
+                  childAspectRatio: 0.82,
+                ),
+                itemCount: displayedDownloads.length,
+                itemBuilder: (context, index) {
+                  return _buildDownloadGridCard(displayedDownloads[index], index);
+                },
+              )
+            : ListView.builder(
+                controller: _downloadScrollController,
+                padding: const EdgeInsets.all(16),
+                itemCount: displayedDownloads.length +
+                    (!_isDownloadSearchActive && _hasMoreDownloads ? 1 : 0),
+                cacheExtent: 200.0,
+                addRepaintBoundaries: true,
+                itemBuilder: (context, index) {
+                  if (index == displayedDownloads.length) {
+                    return const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
 
-            final download = displayedDownloads[index];
-            return KeyedSubtree(
-              key: ValueKey(download.id),
-              child: _buildDownloadCard(download, index),
-            );
-          },
-        ),
+                  final download = displayedDownloads[index];
+                  return KeyedSubtree(
+                    key: ValueKey(download.id),
+                    child: _buildDownloadCard(download, index),
+                  );
+                },
+              ),
       );
     }
 
