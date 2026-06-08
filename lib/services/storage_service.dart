@@ -23,6 +23,10 @@ class StorageService {
   static const String _torboxIntegrationEnabledKey =
       'torbox_integration_enabled';
   static const String _torboxHiddenFromNavKey = 'torbox_hidden_from_nav';
+  static const String _rdGridViewKey = 'rd_grid_view';
+  static const String _rdGridCrossAxisKey = 'rd_grid_cross_axis';
+  static const String _torboxGridViewKey = 'torbox_grid_view';
+  static const String _torboxGridCrossAxisKey = 'torbox_grid_cross_axis';
   static const String _pikpakHiddenFromNavKey = 'pikpak_hidden_from_nav';
   static const String _postTorrentActionKey = 'post_torrent_action';
   static const String _torboxPostTorrentActionKey =
@@ -378,6 +382,47 @@ class StorageService {
   static Future<void> clearTorboxHiddenFromNav() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_torboxHiddenFromNavKey);
+  }
+
+  // Grid view preferences
+  static Future<bool> getRdGridView() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_rdGridViewKey) ?? false;
+  }
+
+  static Future<void> setRdGridView(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_rdGridViewKey, value);
+  }
+
+  static Future<double> getRdGridCrossAxis() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_rdGridCrossAxisKey) ?? 2.0;
+  }
+
+  static Future<void> setRdGridCrossAxis(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_rdGridCrossAxisKey, value);
+  }
+
+  static Future<bool> getTorboxGridView() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_torboxGridViewKey) ?? false;
+  }
+
+  static Future<void> setTorboxGridView(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_torboxGridViewKey, value);
+  }
+
+  static Future<double> getTorboxGridCrossAxis() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_torboxGridCrossAxisKey) ?? 2.0;
+  }
+
+  static Future<void> setTorboxGridCrossAxis(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_torboxGridCrossAxisKey, value);
   }
 
   static Future<bool> isInitialSetupComplete() async {
