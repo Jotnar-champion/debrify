@@ -3901,6 +3901,36 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
                     ),
                     InkWell(
                       onTap: _toggleGridView,
+                      onLongPress: _showGridSizeDialog,
+                      borderRadius: BorderRadius.circular(20),
+                      child: Tooltip(
+                        triggerMode: TooltipTriggerMode.manual,
+                        message: _isGridView
+                            ? 'List view (long-press to set grid size)'
+                            : 'Grid view (long-press to set grid size)',
+                        child: Padding(
+                          padding: EdgeInsets.all(isCompact ? 6.0 : 8.0),
+                          child: Icon(
+                            _isGridView ? Icons.list_rounded : Icons.grid_view_rounded,
+                            size: iconSize,
+                            color: _isGridView
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildDownloadToolbar() {
     final theme = Theme.of(context);
     return LayoutBuilder(
       builder: (context, constraints) {
