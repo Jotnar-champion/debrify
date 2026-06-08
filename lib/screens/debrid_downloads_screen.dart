@@ -246,14 +246,6 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     _downloadScrollController.addListener(_onDownloadScroll);
     _folderScrollController.addListener(_updateScrollToTop);
 
-    // Load persisted grid view preferences
-    StorageService.getRdGridView().then((v) {
-      if (mounted) setState(() => _isGridView = v);
-    });
-    StorageService.getRdGridCrossAxis().then((v) {
-      if (mounted) setState(() => _gridCrossAxisCount = v);
-    });
-
     // Register back navigation handler for folder navigation
     if (widget.isPushedRoute) {
       // Pushed as a route - use pushed route handler
@@ -493,9 +485,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
   }
 
   void _toggleGridView() {
-    final next = !_isGridView;
-    setState(() => _isGridView = next);
-    StorageService.setRdGridView(next);
+    setState(() => _isGridView = !_isGridView);
   }
 
   Future<void> _loadApiKeyAndData() async {
@@ -3158,7 +3148,6 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
             TextButton(
               onPressed: () {
                 setState(() => _gridCrossAxisCount = tempCount);
-                StorageService.setRdGridCrossAxis(tempCount);
                 Navigator.of(ctx).pop();
               },
               style: TextButton.styleFrom(foregroundColor: const Color(0xFF6366F1)),
@@ -4320,6 +4309,21 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
       );
     }
 
+    if (_isGridView) {
+      final crossAxis = _gridCrossAxisCount.round().clamp(1, 5);
+      return GridView.builder(
+        padding: const EdgeInsets.all(16),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxis,
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: results.length,
+        itemBuilder: (context, index) =>
+            _buildTorrentGridCard(results[index], index),
+      );
+    }
     return ListView.builder(
       padding: const EdgeInsets.all(16),
       itemCount: results.length,
