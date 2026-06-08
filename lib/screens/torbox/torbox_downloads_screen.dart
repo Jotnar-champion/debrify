@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
 
@@ -112,6 +113,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
 
   // Search state (for folder browsing mode)
   bool _isSearchActive = false;
+  Timer? _searchDebounceTimer;
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode(debugLabel: 'torbox-search');
   final FocusNode _searchButtonFocusNode = FocusNode(debugLabel: 'torbox-search-button');
@@ -1038,6 +1040,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     _deleteButtonFocusNode.dispose();
     _folderScrollController.dispose();
     _webDownloadSearchController.dispose();
+    _searchDebounceTimer?.cancel();
     super.dispose();
   }
 
@@ -1056,8 +1059,11 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
       return true;
     }
 
-    // Close torrent search first if active
-    if (_isTorrentSearchActive) {
+    // Close torrent search first if active — only applicable at root level.
+    // When inside a folder browser, this flag may still be true from a prior
+    // torrent-level search, so we must guard with _isAtRoot to avoid silently
+    // consuming the back press without any visible navigation change.
+    if (_isAtRoot && _isTorrentSearchActive) {
       _toggleTorrentSearch();
       return true;
     }
@@ -5606,7 +5612,8 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
       if (!_isTorrentSearchActive) {
         _torrentSearchController.clear();
         _torrentSearchQuery = '';
-        _allTorrentsForSearch.clear();
+        // _allTorrentsForSearch is intentionally kept as an in-memory cache
+        // so re-opening search doesn't trigger another full API fetch.
       } else {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           _torrentSearchFocusNode.requestFocus();
@@ -5824,8 +5831,19 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 ),
                 style: const TextStyle(color: Colors.white),
-                onChanged: _performSearch,
-                onSubmitted: (_) => _searchFocusNode.unfocus(),
+                onChanged: (query) {
+                  // Debounce: wait 250ms after last keystroke before searching
+                  _searchDebounceTimer?.cancel();
+                  _searchDebounceTimer = Timer(
+                    const Duration(milliseconds: 250),
+                    () => _performSearch(query),
+                  );
+                },
+                onSubmitted: (_) {
+                  _searchDebounceTimer?.cancel();
+                  _performSearch(_searchController.text);
+                  _searchFocusNode.unfocus();
+                },
               ),
             ),
           ),
@@ -6061,16 +6079,21 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
               ),
             ),
           // Grid/List toggle — long-press opens size dialog
-          Tooltip(
-            message: _isGridView
-                ? 'List view  (long-press to resize grid)'
-                : 'Grid view',
-            child: GestureDetector(
-              onLongPress: _isGridView ? _showGridSizeDialog : null,
-              child: IconButton(
-                icon: Icon(_isGridView ? Icons.list_rounded : Icons.grid_view_rounded),
-                onPressed: () => setState(() => _isGridView = !_isGridView),
-                visualDensity: VisualDensity.compact,
+          InkWell(
+            onTap: () => setState(() => _isGridView = !_isGridView),
+            onLongPress: _showGridSizeDialog,
+            borderRadius: BorderRadius.circular(20),
+            child: Tooltip(
+              triggerMode: TooltipTriggerMode.manual,
+              message: _isGridView
+                  ? 'List view (long-press to set grid size)'
+                  : 'Grid view (long-press to set grid size)',
+              child: Padding(
+                padding: const EdgeInsets.all(10.0),
+                child: Icon(
+                  _isGridView ? Icons.list_rounded : Icons.grid_view_rounded,
+                  size: 24,
+                ),
               ),
             ),
           ),
@@ -6181,6 +6204,25 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     }
 
     // List of items (torrents or files/folders)
+    if (_isAtRoot && _isGridView) {
+      // Grid view for root torrent list
+      final crossAxis = _gridCrossAxisCount.round().clamp(1, 5);
+      return GridView.builder(
+        controller: _scrollController,
+        padding: const EdgeInsets.all(12),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxis,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: _currentItems.length,
+        itemBuilder: (context, index) {
+          return _buildTorrentRootGridCard(_currentItems[index] as TorboxTorrent, index);
+        },
+      );
+    }
+
     if (!_isAtRoot && _isGridView) {
       // Grid view for folder contents
       final crossAxis = _gridCrossAxisCount.round().clamp(1, 5);
@@ -6301,6 +6343,24 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
                 d.name.toLowerCase().contains(_webDownloadSearchQuery.toLowerCase()))
             .toList()
         : _webDownloads;
+
+    if (_isGridView) {
+      final crossAxis = _gridCrossAxisCount.round().clamp(1, 5);
+      return GridView.builder(
+        controller: _webDownloadScrollController,
+        padding: const EdgeInsets.all(12),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxis,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: displayedWebDownloads.length,
+        itemBuilder: (context, index) {
+          return _buildWebDownloadGridCard(displayedWebDownloads[index], index);
+        },
+      );
+    }
 
     return ListView.builder(
       controller: _webDownloadScrollController,
@@ -7034,6 +7094,163 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     );
   }
 
+  Widget _buildTorrentRootGridCard(TorboxTorrent torrent, int index) {
+    final theme = Theme.of(context);
+    final videoCount = torrent.files.where(_torboxFileLooksLikeVideo).length;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: theme.dividerColor.withValues(alpha: 0.5),
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => _navigateIntoTorrent(torrent),
+        child: Stack(
+          children: [
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.folder_rounded, size: 40, color: Colors.amber),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    torrent.name,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$videoCount video${videoCount == 1 ? '' : 's'} · ${torrent.files.length} files',
+                  style: TextStyle(color: Colors.grey[500], fontSize: 10),
+                ),
+              ],
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert,
+                    size: 16, color: Colors.grey.withValues(alpha: 0.7)),
+                tooltip: 'More options',
+                onSelected: (value) {
+                  switch (value) {
+                    case 'open':
+                      _navigateIntoTorrent(torrent);
+                    case 'play':
+                      _handlePlayTorrent(torrent);
+                    case 'download':
+                      _showDownloadOptionsDialog(torrent);
+                    case 'more':
+                      _showTorboxTorrentMoreOptions(torrent);
+                    case 'delete':
+                      _confirmDeleteTorrent(torrent);
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(value: 'open', child: Row(children: [Icon(Icons.folder_open, size: 18, color: Colors.amber), SizedBox(width: 12), Text('Open')])),
+                  const PopupMenuItem(value: 'play', child: Row(children: [Icon(Icons.play_arrow_rounded, size: 18, color: Colors.green), SizedBox(width: 12), Text('Play')])),
+                  const PopupMenuItem(value: 'download', child: Row(children: [Icon(Icons.download, size: 18, color: Colors.green), SizedBox(width: 12), Text('Download')])),
+                  const PopupMenuItem(value: 'more', child: Row(children: [Icon(Icons.more_horiz, size: 18), SizedBox(width: 12), Text('More options')])),
+                  const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 12), Text('Delete')])),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWebDownloadGridCard(TorboxWebDownload webDownload, int index) {
+    final theme = Theme.of(context);
+    final videoCount = webDownload.files.where(_torboxFileLooksLikeVideo).length;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: theme.dividerColor.withValues(alpha: 0.5),
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => _navigateIntoWebDownload(webDownload),
+        child: Stack(
+          children: [
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  videoCount > 0 ? Icons.play_circle_rounded : Icons.link_rounded,
+                  size: 40,
+                  color: videoCount > 0 ? const Color(0xFF22C55E) : Colors.blueGrey,
+                ),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    webDownload.name,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$videoCount video${videoCount == 1 ? '' : 's'} · ${webDownload.files.length} files',
+                  style: TextStyle(color: Colors.grey[500], fontSize: 10),
+                ),
+              ],
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert,
+                    size: 16, color: Colors.grey.withValues(alpha: 0.7)),
+                tooltip: 'More options',
+                onSelected: (value) {
+                  switch (value) {
+                    case 'open':
+                      _navigateIntoWebDownload(webDownload);
+                    case 'play':
+                      _handlePlayWebDownload(webDownload);
+                    case 'download':
+                      _showWebDownloadOptionsDialog(webDownload);
+                    case 'delete':
+                      _confirmDeleteWebDownload(webDownload);
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(value: 'open', child: Row(children: [Icon(Icons.folder_open, size: 18, color: Colors.amber), SizedBox(width: 12), Text('Open')])),
+                  const PopupMenuItem(value: 'play', child: Row(children: [Icon(Icons.play_arrow_rounded, size: 18, color: Colors.green), SizedBox(width: 12), Text('Play')])),
+                  const PopupMenuItem(value: 'download', child: Row(children: [Icon(Icons.download, size: 18, color: Colors.green), SizedBox(width: 12), Text('Download')])),
+                  const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_outline, size: 18, color: Colors.red), SizedBox(width: 12), Text('Delete')])),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildFileOrFolderGridCard(RDFileNode node, int index) {
     final isFolder = node.isFolder;
     final isVideo = !isFolder && FileUtils.isVideoFile(node.name);
@@ -7518,6 +7735,27 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
                         ),
                       ),
                     ],
+                    InkWell(
+                      onTap: () => setState(() => _isGridView = !_isGridView),
+                      onLongPress: _showGridSizeDialog,
+                      borderRadius: BorderRadius.circular(20),
+                      child: Tooltip(
+                        triggerMode: TooltipTriggerMode.manual,
+                        message: _isGridView
+                            ? 'List view (long-press to set grid size)'
+                            : 'Grid view (long-press to set grid size)',
+                        child: Padding(
+                          padding: EdgeInsets.all(isCompact ? 6.0 : 8.0),
+                          child: Icon(
+                            _isGridView ? Icons.list_rounded : Icons.grid_view_rounded,
+                            size: iconSize,
+                            color: _isGridView
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
