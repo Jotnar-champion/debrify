@@ -216,14 +216,6 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     _webDownloadScrollController.addListener(_onWebDownloadScroll);
     _folderScrollController.addListener(_updateScrollToTop);
 
-    // Load persisted grid view preferences
-    StorageService.getTorboxGridView().then((v) {
-      if (mounted) setState(() => _isGridView = v);
-    });
-    StorageService.getTorboxGridCrossAxis().then((v) {
-      if (mounted) setState(() => _gridCrossAxisCount = v);
-    });
-
     _pendingInitialTorrent = widget.initialTorrentToOpen;
 
     if (widget.selectSourceMode &&
@@ -1156,9 +1148,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
   }
 
   void _toggleGridView() {
-    final next = !_isGridView;
-    setState(() => _isGridView = next);
-    StorageService.setTorboxGridView(next);
+    setState(() => _isGridView = !_isGridView);
   }
 
   Future<void> _loadApiKeyAndTorrents() async {
@@ -7191,7 +7181,6 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
             TextButton(
               onPressed: () {
                 setState(() => _gridCrossAxisCount = tempCount);
-                StorageService.setTorboxGridCrossAxis(tempCount);
                 Navigator.of(ctx).pop();
               },
               style: TextButton.styleFrom(foregroundColor: const Color(0xFF6366F1)),
@@ -7703,6 +7692,21 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
       );
     }
 
+    if (_isGridView) {
+      final crossAxis = _gridCrossAxisCount.round().clamp(1, 5);
+      return GridView.builder(
+        padding: const EdgeInsets.all(16),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxis,
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: results.length,
+        itemBuilder: (context, index) =>
+            _buildTorrentRootGridCard(results[index], index),
+      );
+    }
     return ListView.builder(
       padding: const EdgeInsets.all(16),
       itemCount: results.length,
