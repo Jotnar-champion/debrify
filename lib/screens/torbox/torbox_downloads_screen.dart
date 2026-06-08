@@ -118,6 +118,24 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
   final FocusNode _searchClearFocusNode = FocusNode(debugLabel: 'torbox-search-clear');
   List<_TorboxSearchResult> _searchResults = [];
 
+  // Web downloads search state
+  bool _isWebDownloadSearchActive = false;
+  String _webDownloadSearchQuery = '';
+  final TextEditingController _webDownloadSearchController = TextEditingController();
+
+  // Grid view state (folder browser)
+  bool _isGridView = false;
+  double _gridCrossAxisCount = 2.0;
+
+  // Scroll position memory
+  final ScrollController _folderScrollController = ScrollController();
+  double _savedRootScrollPosition = 0.0;
+  final List<double> _savedFolderScrollPositions = [];
+
+  // Folder-level search state stack (saves & restores search when navigating into/out of subfolders)
+  final List<({bool isActive, String query, List<_TorboxSearchResult> results})>
+      _savedSearchStates = [];
+
   // Torrent-level search state (for root torrent list)
   bool _isTorrentSearchActive = false;
   final TextEditingController _torrentSearchController = TextEditingController();
@@ -1018,6 +1036,8 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     _torrentSearchClearFocusNode.dispose();
     _torrentSearchToggleFocusNode.dispose();
     _deleteButtonFocusNode.dispose();
+    _folderScrollController.dispose();
+    _webDownloadSearchController.dispose();
     super.dispose();
   }
 
@@ -4938,6 +4958,13 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     // Focus first item after navigation
     _shouldFocusOnLoad = true;
 
+    // Save the current root scroll position so we can restore it on back navigation
+    _savedRootScrollPosition = _scrollController.hasClients
+        ? _scrollController.offset
+        : 0.0;
+    _savedFolderScrollPositions.clear();
+    _savedSearchStates.clear();
+
     print('🔍 Navigating into torrent: id=${torrent.id}, name=${torrent.name}');
     print('   Files count: ${torrent.files.length}');
     print('   Sample files:');
@@ -4995,6 +5022,13 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     // Focus first item after navigation
     _shouldFocusOnLoad = true;
 
+    // Save the current root scroll position so we can restore it on back navigation
+    _savedRootScrollPosition = _webDownloadScrollController.hasClients
+        ? _webDownloadScrollController.offset
+        : 0.0;
+    _savedFolderScrollPositions.clear();
+    _savedSearchStates.clear();
+
     // Build folder tree for this web download
     final tree = TorboxFolderTreeBuilder.buildTree(webDownload.files);
 
@@ -5041,6 +5075,23 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
   void _navigateIntoFolder(RDFileNode folderNode) {
     if (!folderNode.isFolder) return;
 
+    // Save current folder scroll position before navigating deeper
+    _savedFolderScrollPositions.add(
+      _folderScrollController.hasClients ? _folderScrollController.offset : 0.0,
+    );
+
+    // Save and clear the folder-level search state so it can be restored on back navigation
+    _savedSearchStates.add((
+      isActive: _isSearchActive,
+      query: _searchController.text,
+      results: List<_TorboxSearchResult>.from(_searchResults),
+    ));
+    if (_isSearchActive) {
+      _isSearchActive = false;
+      _searchController.clear();
+      _searchResults = [];
+    }
+
     // Focus first item after navigation
     _shouldFocusOnLoad = true;
 
@@ -5078,6 +5129,13 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
       _currentViewNodes = transformedChildren;
     });
 
+    // Scroll to top of new folder
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_folderScrollController.hasClients) {
+        _folderScrollController.jumpTo(0);
+      }
+    });
+
     // Focus first item after navigation
     _focusFirstItemOrFallback();
   }
@@ -5086,7 +5144,11 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
   void _navigateUp() {
     if (_navigationStack.isEmpty) return;
 
-    final previous = _navigationStack.removeLast();
+    // Determine if we're going back to root or up a folder level
+    final previous = _navigationStack.last;
+    final goingToRoot = previous.torrent == null && previous.webDownload == null;
+
+    _navigationStack.removeLast();
 
     // Reapply view mode transformation after navigation
     List<RDFileNode>? transformedNodes;
@@ -5126,6 +5188,41 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
       _currentFolderNode = previous.node;
       _currentViewNodes = transformedNodes;
     });
+
+    // Restore scroll positions after state update
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (goingToRoot) {
+        // Restore root list scroll position
+        final isWebDownload = previous.webDownload != null ||
+            (_currentWebDownload == null && _selectedView == _TorboxDownloadsView.webDownloads);
+        final controller = isWebDownload ? _webDownloadScrollController : _scrollController;
+        if (controller.hasClients) {
+          final max = controller.position.maxScrollExtent;
+          controller.jumpTo(_savedRootScrollPosition.clamp(0.0, max));
+        }
+      } else {
+        // Restore folder scroll position
+        final savedPos = _savedFolderScrollPositions.isNotEmpty
+            ? _savedFolderScrollPositions.removeLast()
+            : 0.0;
+        if (_folderScrollController.hasClients) {
+          final max = _folderScrollController.position.maxScrollExtent;
+          _folderScrollController.jumpTo(savedPos.clamp(0.0, max));
+        }
+      }
+    });
+
+    // Restore folder-level search state when going up a subfolder (not to root)
+    if (!goingToRoot && _savedSearchStates.isNotEmpty) {
+      final saved = _savedSearchStates.removeLast();
+      if (saved.isActive) {
+        setState(() {
+          _isSearchActive = true;
+          _searchController.text = saved.query;
+          _searchResults = saved.results;
+        });
+      }
+    }
   }
 
   /// Check if we're at root level (torrent/web download list)
@@ -5963,6 +6060,20 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
                 tooltip: _isSearchActive ? 'Close search' : 'Search files',
               ),
             ),
+          // Grid/List toggle — long-press opens size dialog
+          Tooltip(
+            message: _isGridView
+                ? 'List view  (long-press to resize grid)'
+                : 'Grid view',
+            child: GestureDetector(
+              onLongPress: _isGridView ? _showGridSizeDialog : null,
+              child: IconButton(
+                icon: Icon(_isGridView ? Icons.list_rounded : Icons.grid_view_rounded),
+                onPressed: () => setState(() => _isGridView = !_isGridView),
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+          ),
         ],
       ),
       body: Column(
@@ -5970,6 +6081,9 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
           const SizedBox(height: 8),
           if (_isAtRoot && !widget.selectSourceMode) _buildToolbar(),
           if (_isAtRoot && _isTorrentSearchActive) _buildTorrentSearchBar(),
+          if (_isAtRoot && _isWebDownloadSearchActive &&
+              _selectedView == _TorboxDownloadsView.webDownloads)
+            _buildWebDownloadSearchBar(),
           if (_isAtRoot && _isSelectionMode) _buildSelectionBar(),
           if (!_isAtRoot) _buildViewModeDropdown(),
           if (_isSearchActive && showSearch) _buildSearchBar(),
@@ -6067,8 +6181,27 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     }
 
     // List of items (torrents or files/folders)
+    if (!_isAtRoot && _isGridView) {
+      // Grid view for folder contents
+      final crossAxis = _gridCrossAxisCount.round().clamp(1, 5);
+      return GridView.builder(
+        controller: _folderScrollController,
+        padding: const EdgeInsets.all(12),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxis,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: _currentItems.length,
+        itemBuilder: (context, index) {
+          return _buildFileOrFolderGridCard(_currentItems[index] as RDFileNode, index);
+        },
+      );
+    }
+
     return ListView.builder(
-      controller: _scrollController,
+      controller: _isAtRoot ? _scrollController : _folderScrollController,
       padding: const EdgeInsets.all(16),
       itemCount: _currentItems.length + (_isLoadingMore ? 1 : 0),
       itemBuilder: (context, index) {
@@ -6161,20 +6294,58 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     }
 
     // List of web downloads
+    final displayedWebDownloads = _isWebDownloadSearchActive &&
+            _webDownloadSearchQuery.isNotEmpty
+        ? _webDownloads
+            .where((d) =>
+                d.name.toLowerCase().contains(_webDownloadSearchQuery.toLowerCase()))
+            .toList()
+        : _webDownloads;
+
     return ListView.builder(
       controller: _webDownloadScrollController,
       padding: const EdgeInsets.all(16),
-      itemCount: _webDownloads.length + (_isLoadingMoreWebDownloads ? 1 : 0),
+      itemCount: displayedWebDownloads.length +
+          (!_isWebDownloadSearchActive && _isLoadingMoreWebDownloads ? 1 : 0),
       itemBuilder: (context, index) {
-        if (index >= _webDownloads.length) {
+        if (index >= displayedWebDownloads.length) {
           return const Padding(
             padding: EdgeInsets.symmetric(vertical: 24),
             child: Center(child: CircularProgressIndicator()),
           );
         }
 
-        return _buildWebDownloadCard(_webDownloads[index], index);
+        return _buildWebDownloadCard(displayedWebDownloads[index], index);
       },
+    );
+  }
+
+  Widget _buildWebDownloadSearchBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      child: TextField(
+        controller: _webDownloadSearchController,
+        autofocus: true,
+        onChanged: (v) => setState(() => _webDownloadSearchQuery = v),
+        style: const TextStyle(fontSize: 14),
+        decoration: InputDecoration(
+          hintText: 'Search web downloads...',
+          prefixIcon: const Icon(Icons.search_rounded, size: 20),
+          suffixIcon: _webDownloadSearchQuery.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.clear_rounded, size: 18),
+                  onPressed: () {
+                    _webDownloadSearchController.clear();
+                    setState(() => _webDownloadSearchQuery = '');
+                  },
+                )
+              : null,
+          filled: true,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
     );
   }
 
@@ -6798,6 +6969,187 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     );
   }
 
+  void _showGridSizeDialog() {
+    double tempCount = _gridCrossAxisCount;
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text(
+            'Grid Size',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Columns:', style: TextStyle(color: Colors.grey)),
+                  Text(
+                    '${tempCount.round()}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                    ),
+                  ),
+                ],
+              ),
+              Slider(
+                value: tempCount,
+                min: 1,
+                max: 5,
+                divisions: 4,
+                activeColor: const Color(0xFF6366F1),
+                onChanged: (v) => setDialogState(() => tempCount = v),
+              ),
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Large', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                  Text('Small', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            TextButton(
+              onPressed: () {
+                setState(() => _gridCrossAxisCount = tempCount);
+                Navigator.of(ctx).pop();
+              },
+              style: TextButton.styleFrom(foregroundColor: const Color(0xFF6366F1)),
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFileOrFolderGridCard(RDFileNode node, int index) {
+    final isFolder = node.isFolder;
+    final isVideo = !isFolder && FileUtils.isVideoFile(node.name);
+
+    final icon = isFolder
+        ? Icons.folder_rounded
+        : (isVideo ? Icons.play_circle_rounded : Icons.insert_drive_file_rounded);
+    final iconColor = isFolder
+        ? Colors.amber
+        : (isVideo ? const Color(0xFF22C55E) : Colors.blueGrey);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: Theme.of(context).dividerColor.withValues(alpha: 0.5),
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () {
+          if (isFolder) {
+            _navigateIntoFolder(node);
+          } else if (isVideo) {
+            _playVideoFile(node);
+          } else {
+            _downloadFileOrFolder(node);
+          }
+        },
+        child: Stack(
+          children: [
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, size: 40, color: iconColor),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    node.name,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  isFolder
+                      ? '${node.fileCount} files'
+                      : Formatters.formatFileSize(node.bytes ?? 0),
+                  style: TextStyle(
+                    color: Colors.grey[500],
+                    fontSize: 10,
+                  ),
+                ),
+              ],
+            ),
+            // Three-dot menu in top-right
+            Positioned(
+              top: 4,
+              right: 4,
+              child: PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert,
+                    size: 16, color: Colors.grey.withValues(alpha: 0.7)),
+                tooltip: 'More options',
+                onSelected: (value) {
+                  if (value == 'download') {
+                    _downloadFileOrFolder(node);
+                  } else if (value == 'add_to_playlist') {
+                    _addFileOrFolderToPlaylist(node);
+                  } else if (value == 'copy_link') {
+                    _copyFileLink(node);
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: 'download',
+                    child: Row(children: [
+                      Icon(Icons.download, size: 18, color: Colors.green),
+                      SizedBox(width: 12),
+                      Text('Download'),
+                    ]),
+                  ),
+                  if (_currentWebDownload == null &&
+                      (isVideo || (isFolder && TorboxFolderTreeBuilder.hasVideoFiles(node))))
+                    const PopupMenuItem(
+                      value: 'add_to_playlist',
+                      child: Row(children: [
+                        Icon(Icons.playlist_add, size: 18, color: Colors.blue),
+                        SizedBox(width: 12),
+                        Text('Add to Playlist'),
+                      ]),
+                    ),
+                  if (!isFolder)
+                    const PopupMenuItem(
+                      value: 'copy_link',
+                      child: Row(children: [
+                        Icon(Icons.link, size: 18, color: Colors.orange),
+                        SizedBox(width: 12),
+                        Text('Copy Link'),
+                      ]),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildViewSelector({bool isCompact = false}) {
     final theme = Theme.of(context);
     return Container(
@@ -7060,78 +7412,115 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
           child: Row(
             children: [
               Expanded(child: _buildViewSelector(isCompact: isCompact)),
-              SizedBox(width: isCompact ? 6 : 12),
-              if (hasItems) ...[
-                Tooltip(
-                  message: _isSelectionMode ? 'Exit selection' : 'Select items',
-                  child: IconButton(
-                    onPressed: _toggleSelectionMode,
-                    iconSize: iconSize,
-                    padding: iconPadding,
-                    constraints: iconConstraints,
-                    icon: Icon(
-                      _isSelectionMode ? Icons.close : Icons.checklist_outlined,
-                    ),
-                    color: _isSelectionMode
-                        ? theme.colorScheme.error
-                        : theme.colorScheme.onSurface,
-                    visualDensity: VisualDensity.compact,
-                  ),
+              SizedBox(width: isCompact ? 4 : 8),
+              // Icon buttons in a scrollable row to prevent overflow on small screens
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (hasItems) ...[
+                      Tooltip(
+                        message: _isSelectionMode ? 'Exit selection' : 'Select items',
+                        child: IconButton(
+                          onPressed: _toggleSelectionMode,
+                          iconSize: iconSize,
+                          padding: iconPadding,
+                          constraints: iconConstraints,
+                          icon: Icon(
+                            _isSelectionMode ? Icons.close : Icons.checklist_outlined,
+                          ),
+                          color: _isSelectionMode
+                              ? theme.colorScheme.error
+                              : theme.colorScheme.onSurface,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      if (isTorrentsView)
+                        Tooltip(
+                          message: 'Delete all torrents',
+                          child: IconButton(
+                            onPressed: _confirmDeleteAll,
+                            iconSize: iconSize,
+                            padding: iconPadding,
+                            constraints: iconConstraints,
+                            icon: const Icon(Icons.delete_sweep_outlined),
+                            color: theme.colorScheme.error,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                    ],
+                    if (isTorrentsView) ...[
+                      Tooltip(
+                        message: _isTorrentSearchActive ? 'Close search' : 'Search torrents',
+                        child: IconButton(
+                          focusNode: _torrentSearchToggleFocusNode,
+                          onPressed: _toggleTorrentSearch,
+                          iconSize: iconSize,
+                          padding: iconPadding,
+                          constraints: iconConstraints,
+                          icon: Icon(_isTorrentSearchActive
+                              ? Icons.search_off_rounded
+                              : Icons.search_rounded),
+                          color: _isTorrentSearchActive
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.onSurface,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      Tooltip(
+                        message: 'Add magnet link',
+                        child: IconButton(
+                          onPressed: _showAddMagnetDialog,
+                          iconSize: iconSize,
+                          padding: iconPadding,
+                          constraints: iconConstraints,
+                          icon: const Icon(Icons.add_circle_outline),
+                          color: theme.colorScheme.primary,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ] else ...[
+                      Tooltip(
+                        message: 'Add web download',
+                        child: IconButton(
+                          onPressed: _showAddWebDownloadDialog,
+                          iconSize: iconSize,
+                          padding: iconPadding,
+                          constraints: iconConstraints,
+                          icon: const Icon(Icons.link),
+                          color: theme.colorScheme.primary,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      Tooltip(
+                        message: _isWebDownloadSearchActive
+                            ? 'Close search'
+                            : 'Search web downloads',
+                        child: IconButton(
+                          onPressed: () => setState(() {
+                            _isWebDownloadSearchActive = !_isWebDownloadSearchActive;
+                            if (!_isWebDownloadSearchActive) {
+                              _webDownloadSearchController.clear();
+                              _webDownloadSearchQuery = '';
+                            }
+                          }),
+                          iconSize: iconSize,
+                          padding: iconPadding,
+                          constraints: iconConstraints,
+                          icon: Icon(_isWebDownloadSearchActive
+                              ? Icons.close
+                              : Icons.search_rounded),
+                          color: _isWebDownloadSearchActive
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.onSurface,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-                if (isTorrentsView)
-                  Tooltip(
-                    message: 'Delete all torrents',
-                    child: IconButton(
-                      onPressed: _confirmDeleteAll,
-                      iconSize: iconSize,
-                      padding: iconPadding,
-                      constraints: iconConstraints,
-                      icon: const Icon(Icons.delete_sweep_outlined),
-                      color: theme.colorScheme.error,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                  ),
-              ],
-              if (isTorrentsView) ...[
-                Tooltip(
-                  message: _isTorrentSearchActive ? 'Close search' : 'Search torrents',
-                  child: IconButton(
-                    focusNode: _torrentSearchToggleFocusNode,
-                    onPressed: _toggleTorrentSearch,
-                    iconSize: iconSize,
-                    padding: iconPadding,
-                    constraints: iconConstraints,
-                    icon: Icon(_isTorrentSearchActive ? Icons.search_off_rounded : Icons.search_rounded),
-                    color: _isTorrentSearchActive ? theme.colorScheme.primary : theme.colorScheme.onSurface,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
-                Tooltip(
-                  message: 'Add magnet link',
-                  child: IconButton(
-                    onPressed: _showAddMagnetDialog,
-                    iconSize: iconSize,
-                    padding: iconPadding,
-                    constraints: iconConstraints,
-                    icon: const Icon(Icons.add_circle_outline),
-                    color: theme.colorScheme.primary,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
-              ] else ...[
-                Tooltip(
-                  message: 'Add web download',
-                  child: IconButton(
-                    onPressed: _showAddWebDownloadDialog,
-                    iconSize: iconSize,
-                    padding: iconPadding,
-                    constraints: iconConstraints,
-                    icon: const Icon(Icons.link),
-                    color: theme.colorScheme.primary,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
-              ],
+              ),
             ],
           ),
         );
