@@ -169,6 +169,24 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
   final FocusNode _searchClearFocusNode = FocusNode(debugLabel: 'rd-search-clear');
   List<_RDSearchResult> _searchResults = [];
 
+  // Downloads (DDL) search state
+  bool _isDownloadSearchActive = false;
+  String _downloadSearchQuery = '';
+  final TextEditingController _downloadSearchController = TextEditingController();
+
+  // Grid view state (folder browser)
+  bool _isGridView = false;
+  double _gridCrossAxisCount = 2.0;
+
+  // Scroll position memory
+  final ScrollController _folderScrollController = ScrollController();
+  double _savedRootScrollPosition = 0.0;
+  final List<double> _savedFolderScrollPositions = [];
+
+  // Folder-level search state stack (saves & restores search when navigating into/out of subfolders)
+  final List<({bool isActive, String query, List<_RDSearchResult> results})>
+      _savedSearchStates = [];
+
   @override
   void initState() {
     super.initState();
@@ -348,6 +366,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
 
     _torrentScrollController.dispose();
     _downloadScrollController.dispose();
+    _folderScrollController.dispose();
     _magnetController.dispose();
     _linkController.dispose();
 
@@ -366,6 +385,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     _torrentSearchController.dispose();
     _torrentSearchFocusNode.dispose();
     _torrentSearchClearFocusNode.dispose();
+    _downloadSearchController.dispose();
 
     super.dispose();
   }
@@ -1845,6 +1865,13 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
 
     _exitSelectionMode();
 
+    // Save the current root scroll position so we can restore it on back navigation
+    _savedRootScrollPosition = _torrentScrollController.hasClients
+        ? _torrentScrollController.offset
+        : 0.0;
+    _savedFolderScrollPositions.clear();
+    _savedSearchStates.clear();
+
     // Focus first item after folder contents load
     _shouldFocusOnLoad = true;
 
@@ -1981,6 +2008,23 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
   void _navigateIntoFolder(RDFileNode folder) {
     if (!folder.isFolder) return;
 
+    // Save current folder scroll position before navigating deeper
+    _savedFolderScrollPositions.add(
+      _folderScrollController.hasClients ? _folderScrollController.offset : 0.0,
+    );
+
+    // Save and clear the folder-level search state so it can be restored on back navigation
+    _savedSearchStates.add((
+      isActive: _isSearchActive,
+      query: _searchController.text,
+      results: List<_RDSearchResult>.from(_searchResults),
+    ));
+    if (_isSearchActive) {
+      _isSearchActive = false;
+      _searchController.clear();
+      _searchResults = [];
+    }
+
     // Focus first item after navigation
     _shouldFocusOnLoad = true;
 
@@ -2013,6 +2057,13 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
       _currentViewNodes = transformedChildren;
     });
 
+    // Scroll to top of new folder
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_folderScrollController.hasClients) {
+        _folderScrollController.jumpTo(0);
+      }
+    });
+
     // Focus first item after navigation
     _focusFirstItemOrFallback();
   }
@@ -2020,7 +2071,8 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
   /// Navigate up one level
   void _navigateUp() {
     if (_folderPath.isEmpty && _currentTorrentId != null) {
-      // Go back to torrents list
+      // Go back to torrents list - capture saved position before setState
+      final savedPos = _savedRootScrollPosition;
       setState(() {
         _currentTorrentId = null;
         _currentTorrent = null;
@@ -2028,9 +2080,19 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         _currentViewNodes = null;
         _folderPath = [];
       });
+      // Restore the root scroll position after the list rebuilds
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_torrentScrollController.hasClients) {
+          final max = _torrentScrollController.position.maxScrollExtent;
+          _torrentScrollController.jumpTo(savedPos.clamp(0.0, max));
+        }
+      });
 
     } else if (_folderPath.isNotEmpty && _currentFolderTree != null) {
-      // Go up one folder level
+      // Go up one folder level - restore saved folder scroll position
+      final savedPos = _savedFolderScrollPositions.isNotEmpty
+          ? _savedFolderScrollPositions.removeLast()
+          : 0.0;
       _folderPath.removeLast();
 
       // Get raw nodes at the new path
@@ -2099,6 +2161,26 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
       setState(() {
         _currentViewNodes = transformedNodes;
       });
+
+      // Restore the saved scroll position for this folder level
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_folderScrollController.hasClients) {
+          final max = _folderScrollController.position.maxScrollExtent;
+          _folderScrollController.jumpTo(savedPos.clamp(0.0, max));
+        }
+      });
+
+      // Restore the folder-level search state (query + results from parent folder)
+      if (_savedSearchStates.isNotEmpty) {
+        final saved = _savedSearchStates.removeLast();
+        if (saved.isActive) {
+          setState(() {
+            _isSearchActive = true;
+            _searchController.text = saved.query;
+            _searchResults = saved.results;
+          });
+        }
+      }
 
     }
   }
@@ -2798,9 +2880,24 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
               onPressed: _toggleSearch,
               tooltip: _isSearchActive ? 'Close search' : 'Search files',
             ),
+          // Grid/List view toggle — long-press opens size dialog
+          Tooltip(
+            message: _isGridView
+                ? 'List view  (long-press to resize grid)'
+                : 'Grid view',
+            child: GestureDetector(
+              onLongPress: _isGridView ? _showGridSizeDialog : null,
+              child: IconButton(
+                icon: Icon(_isGridView ? Icons.list_rounded : Icons.grid_view_rounded),
+                onPressed: () => setState(() => _isGridView = !_isGridView),
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+          ),
           IconButton(
             focusNode: _refreshButtonFocusNode,
             icon: const Icon(Icons.refresh),
+            visualDensity: VisualDensity.compact,
             onPressed: _currentTorrent != null
                 ? () => _navigateIntoTorrent(_currentTorrent!)
                 : null,
@@ -2840,7 +2937,26 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
       return const Center(child: Text('Empty folder'));
     }
 
+    if (_isGridView) {
+      final crossAxis = _gridCrossAxisCount.round().clamp(1, 5);
+      return GridView.builder(
+        controller: _folderScrollController,
+        padding: const EdgeInsets.all(12),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxis,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          childAspectRatio: 0.82,
+        ),
+        itemCount: _currentViewNodes!.length,
+        itemBuilder: (context, index) {
+          return _buildNodeGridCard(_currentViewNodes![index], index);
+        },
+      );
+    }
+
     return ListView.builder(
+      controller: _folderScrollController,
       padding: const EdgeInsets.all(16),
       itemCount: _currentViewNodes!.length,
       cacheExtent: 200.0, // Pre-cache items for smoother scrolling
@@ -2851,6 +2967,191 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           child: _buildNodeCard(node, index),
         );
       },
+    );
+  }
+
+  void _showGridSizeDialog() {
+    double tempCount = _gridCrossAxisCount;
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E293B),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text(
+            'Grid Size',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Columns:', style: TextStyle(color: Colors.grey)),
+                  Text(
+                    '${tempCount.round()}',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                    ),
+                  ),
+                ],
+              ),
+              Slider(
+                value: tempCount,
+                min: 1,
+                max: 5,
+                divisions: 4,
+                activeColor: const Color(0xFF6366F1),
+                onChanged: (v) => setDialogState(() => tempCount = v),
+              ),
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Large', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                  Text('Small', style: TextStyle(color: Colors.grey, fontSize: 11)),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            TextButton(
+              onPressed: () {
+                setState(() => _gridCrossAxisCount = tempCount);
+                Navigator.of(ctx).pop();
+              },
+              style: TextButton.styleFrom(foregroundColor: const Color(0xFF6366F1)),
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNodeGridCard(RDFileNode node, int index) {
+    final isFolder = node.isFolder;
+    final isVideo = !isFolder && FileUtils.isVideoFile(node.name);
+
+    final icon = isFolder
+        ? Icons.folder_rounded
+        : (isVideo ? Icons.play_circle_rounded : Icons.insert_drive_file_rounded);
+    final iconColor = isFolder
+        ? Colors.amber
+        : (isVideo ? const Color(0xFF22C55E) : Colors.blueGrey);
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF1F2A44), Color(0xFF111C32)],
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.08),
+          width: 1,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () {
+          if (isFolder) {
+            _navigateIntoFolder(node);
+          } else if (isVideo) {
+            _playFile(node);
+          } else {
+            _downloadFile(node);
+          }
+        },
+        child: Stack(
+          children: [
+            Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, size: 40, color: iconColor),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Text(
+                    node.name,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  isFolder
+                      ? '${RDFolderTreeBuilder.countFiles(node)} files'
+                      : Formatters.formatFileSize(node.bytes ?? 0),
+                  style: TextStyle(
+                    color: Colors.grey[500],
+                    fontSize: 10,
+                  ),
+                ),
+              ],
+            ),
+            // Three-dot menu in top-right
+            Positioned(
+              top: 4,
+              right: 4,
+              child: PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert, size: 16, color: Colors.white.withValues(alpha: 0.5)),
+                tooltip: 'More options',
+                onSelected: (value) {
+                  if (value == 'download') {
+                    isFolder ? _downloadFolder(node) : _downloadFile(node);
+                  } else if (value == 'add_to_playlist') {
+                    isFolder ? _addFolderToPlaylist(node) : _addNodeFileToPlaylist(node);
+                  } else if (value == 'copy_link') {
+                    _copyNodeDownloadLink(node);
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: 'download',
+                    child: Row(children: [
+                      Icon(Icons.download, size: 18, color: Colors.green),
+                      SizedBox(width: 12),
+                      Text('Download'),
+                    ]),
+                  ),
+                  if (isFolder || isVideo)
+                    const PopupMenuItem(
+                      value: 'add_to_playlist',
+                      child: Row(children: [
+                        Icon(Icons.playlist_add, size: 18, color: Colors.blue),
+                        SizedBox(width: 12),
+                        Text('Add to Playlist'),
+                      ]),
+                    ),
+                  if (!isFolder)
+                    const PopupMenuItem(
+                      value: 'copy_link',
+                      child: Row(children: [
+                        Icon(Icons.link, size: 18, color: Colors.grey),
+                        SizedBox(width: 12),
+                        Text('Copy Link'),
+                      ]),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -3231,63 +3532,74 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           child: Row(
             children: [
               Expanded(child: _buildViewSelector(isCompact: isCompact)),
-              SizedBox(width: isCompact ? 6 : 12),
-              Tooltip(
-                message: _isTorrentSearchActive ? 'Close search' : 'Search torrents',
-                child: IconButton(
-                  onPressed: _toggleTorrentSearch,
-                  iconSize: iconSize,
-                  padding: iconPadding,
-                  constraints: iconConstraints,
-                  icon: Icon(
-                    _isTorrentSearchActive ? Icons.search_off_rounded : Icons.search_rounded,
-                  ),
-                  color: _isTorrentSearchActive
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.onSurface,
-                  visualDensity: VisualDensity.compact,
-                ),
-              ),
-              if (_torrents.isNotEmpty) ...[
-                Tooltip(
-                  message: _isSelectionMode ? 'Exit selection' : 'Select items',
-                  child: IconButton(
-                    onPressed: _toggleSelectionMode,
-                    iconSize: iconSize,
-                    padding: iconPadding,
-                    constraints: iconConstraints,
-                    icon: Icon(
-                      _isSelectionMode ? Icons.close : Icons.checklist_outlined,
+              SizedBox(width: isCompact ? 4 : 8),
+              // Scrollable icon buttons to prevent overflow on small screens
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Tooltip(
+                      message: _isTorrentSearchActive ? 'Close search' : 'Search torrents',
+                      child: IconButton(
+                        onPressed: _toggleTorrentSearch,
+                        iconSize: iconSize,
+                        padding: iconPadding,
+                        constraints: iconConstraints,
+                        icon: Icon(
+                          _isTorrentSearchActive
+                              ? Icons.search_off_rounded
+                              : Icons.search_rounded,
+                        ),
+                        color: _isTorrentSearchActive
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurface,
+                        visualDensity: VisualDensity.compact,
+                      ),
                     ),
-                    color: _isSelectionMode
-                        ? theme.colorScheme.error
-                        : theme.colorScheme.onSurface,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
-                Tooltip(
-                  message: 'Delete all torrents',
-                  child: IconButton(
-                    onPressed: _handleDeleteAllTorrents,
-                    iconSize: iconSize,
-                    padding: iconPadding,
-                    constraints: iconConstraints,
-                    icon: const Icon(Icons.delete_sweep_outlined),
-                    color: theme.colorScheme.error,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
-              ],
-              Tooltip(
-                message: 'Add magnet link',
-                child: IconButton(
-                  onPressed: _showAddMagnetDialog,
-                  iconSize: iconSize,
-                  padding: iconPadding,
-                  constraints: iconConstraints,
-                  icon: const Icon(Icons.add_circle_outline),
-                  color: theme.colorScheme.primary,
-                  visualDensity: VisualDensity.compact,
+                    if (_torrents.isNotEmpty) ...[
+                      Tooltip(
+                        message: _isSelectionMode ? 'Exit selection' : 'Select items',
+                        child: IconButton(
+                          onPressed: _toggleSelectionMode,
+                          iconSize: iconSize,
+                          padding: iconPadding,
+                          constraints: iconConstraints,
+                          icon: Icon(
+                            _isSelectionMode ? Icons.close : Icons.checklist_outlined,
+                          ),
+                          color: _isSelectionMode
+                              ? theme.colorScheme.error
+                              : theme.colorScheme.onSurface,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      Tooltip(
+                        message: 'Delete all torrents',
+                        child: IconButton(
+                          onPressed: _handleDeleteAllTorrents,
+                          iconSize: iconSize,
+                          padding: iconPadding,
+                          constraints: iconConstraints,
+                          icon: const Icon(Icons.delete_sweep_outlined),
+                          color: theme.colorScheme.error,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
+                    Tooltip(
+                      message: 'Add magnet link',
+                      child: IconButton(
+                        onPressed: _showAddMagnetDialog,
+                        iconSize: iconSize,
+                        padding: iconPadding,
+                        constraints: iconConstraints,
+                        icon: const Icon(Icons.add_circle_outline),
+                        color: theme.colorScheme.primary,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -3319,47 +3631,76 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           child: Row(
             children: [
               Expanded(child: _buildViewSelector(isCompact: isCompact)),
-              SizedBox(width: isCompact ? 6 : 12),
-              if (_downloads.isNotEmpty) ...[
-                Tooltip(
-                  message: _isSelectionMode ? 'Exit selection' : 'Select items',
-                  child: IconButton(
-                    onPressed: _toggleSelectionMode,
-                    iconSize: iconSize,
-                    padding: iconPadding,
-                    constraints: iconConstraints,
-                    icon: Icon(
-                      _isSelectionMode ? Icons.close : Icons.checklist_outlined,
+              SizedBox(width: isCompact ? 4 : 8),
+              // Icon buttons in a scrollable row to prevent overflow on small screens
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_downloads.isNotEmpty) ...[
+                      Tooltip(
+                        message: _isSelectionMode ? 'Exit selection' : 'Select items',
+                        child: IconButton(
+                          onPressed: _toggleSelectionMode,
+                          iconSize: iconSize,
+                          padding: iconPadding,
+                          constraints: iconConstraints,
+                          icon: Icon(
+                            _isSelectionMode ? Icons.close : Icons.checklist_outlined,
+                          ),
+                          color: _isSelectionMode
+                              ? theme.colorScheme.error
+                              : theme.colorScheme.onSurface,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                      Tooltip(
+                        message: 'Delete all downloads',
+                        child: IconButton(
+                          onPressed: _handleDeleteAllDownloads,
+                          iconSize: iconSize,
+                          padding: iconPadding,
+                          constraints: iconConstraints,
+                          icon: const Icon(Icons.delete_sweep_outlined),
+                          color: theme.colorScheme.error,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
+                    Tooltip(
+                      message: 'Add file link',
+                      child: IconButton(
+                        onPressed: _showAddLinkDialog,
+                        iconSize: iconSize,
+                        padding: iconPadding,
+                        constraints: iconConstraints,
+                        icon: const Icon(Icons.note_add_outlined),
+                        color: theme.colorScheme.primary,
+                        visualDensity: VisualDensity.compact,
+                      ),
                     ),
-                    color: _isSelectionMode
-                        ? theme.colorScheme.error
-                        : theme.colorScheme.onSurface,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
-                Tooltip(
-                  message: 'Delete all downloads',
-                  child: IconButton(
-                    onPressed: _handleDeleteAllDownloads,
-                    iconSize: iconSize,
-                    padding: iconPadding,
-                    constraints: iconConstraints,
-                    icon: const Icon(Icons.delete_sweep_outlined),
-                    color: theme.colorScheme.error,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
-              ],
-              Tooltip(
-                message: 'Add file link',
-                child: IconButton(
-                  onPressed: _showAddLinkDialog,
-                  iconSize: iconSize,
-                  padding: iconPadding,
-                  constraints: iconConstraints,
-                  icon: const Icon(Icons.note_add_outlined),
-                  color: theme.colorScheme.primary,
-                  visualDensity: VisualDensity.compact,
+                    Tooltip(
+                      message: _isDownloadSearchActive ? 'Close search' : 'Search downloads',
+                      child: IconButton(
+                        onPressed: () => setState(() {
+                          _isDownloadSearchActive = !_isDownloadSearchActive;
+                          if (!_isDownloadSearchActive) {
+                            _downloadSearchController.clear();
+                            _downloadSearchQuery = '';
+                          }
+                        }),
+                        iconSize: iconSize,
+                        padding: iconPadding,
+                        constraints: iconConstraints,
+                        icon: Icon(_isDownloadSearchActive ? Icons.close : Icons.search),
+                        color: _isDownloadSearchActive
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurface,
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -3719,6 +4060,14 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         ),
       );
     } else {
+      // Filter downloads by search query if active
+      final displayedDownloads = _isDownloadSearchActive && _downloadSearchQuery.isNotEmpty
+          ? _downloads
+              .where((d) =>
+                  d.filename.toLowerCase().contains(_downloadSearchQuery.toLowerCase()))
+              .toList()
+          : _downloads;
+
       body = RefreshIndicator(
         onRefresh: () async {
           if (_apiKey != null) {
@@ -3731,19 +4080,19 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
         child: ListView.builder(
           controller: _downloadScrollController,
           padding: const EdgeInsets.all(16),
-          itemCount: _downloads.length + (_hasMoreDownloads ? 1 : 0),
-          cacheExtent: 200.0, // Pre-cache items for smoother scrolling
-          addRepaintBoundaries: true, // Optimize repainting
+          itemCount: displayedDownloads.length +
+              (!_isDownloadSearchActive && _hasMoreDownloads ? 1 : 0),
+          cacheExtent: 200.0,
+          addRepaintBoundaries: true,
           itemBuilder: (context, index) {
-            if (index == _downloads.length) {
-              // Loading more indicator
+            if (index == displayedDownloads.length) {
               return const Padding(
                 padding: EdgeInsets.all(16),
                 child: Center(child: CircularProgressIndicator()),
               );
             }
 
-            final download = _downloads[index];
+            final download = displayedDownloads[index];
             return KeyedSubtree(
               key: ValueKey(download.id),
               child: _buildDownloadCard(download, index),
@@ -3756,9 +4105,54 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     return Column(
       children: [
         _buildDownloadToolbar(),
+        if (_isDownloadSearchActive) _buildDownloadSearchBar(),
         if (_isSelectionMode) _buildSelectionBar(),
         Expanded(child: body),
       ],
+    );
+  }
+
+  Widget _buildDownloadSearchBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      child: TextField(
+        controller: _downloadSearchController,
+        autofocus: true,
+        onChanged: (v) => setState(() => _downloadSearchQuery = v),
+        style: const TextStyle(color: Colors.white, fontSize: 14),
+        decoration: InputDecoration(
+          hintText: 'Search downloads...',
+          hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+          prefixIcon: Icon(Icons.search_rounded,
+              color: Colors.white.withValues(alpha: 0.4), size: 20),
+          suffixIcon: _downloadSearchQuery.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.clear_rounded, size: 18),
+                  color: Colors.white.withValues(alpha: 0.4),
+                  onPressed: () {
+                    _downloadSearchController.clear();
+                    setState(() => _downloadSearchQuery = '');
+                  },
+                )
+              : null,
+          filled: true,
+          fillColor: const Color(0xFF1E293B),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xFF6366F1)),
+          ),
+        ),
+      ),
     );
   }
 
