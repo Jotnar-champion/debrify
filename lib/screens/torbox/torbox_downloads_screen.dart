@@ -229,6 +229,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
     }
 
     _loadApiKeyAndTorrents();
+    _loadGridSettings();
 
     // Register back navigation handler for folder navigation
     if (widget.isPushedRoute) {
@@ -1148,7 +1149,20 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
   }
 
   void _toggleGridView() {
-    setState(() => _isGridView = !_isGridView);
+    final newValue = !_isGridView;
+    setState(() => _isGridView = newValue);
+    StorageService.setTorboxGridViewEnabled(newValue);
+  }
+
+  Future<void> _loadGridSettings() async {
+    final isGrid = await StorageService.getTorboxGridViewEnabled();
+    final crossAxis = await StorageService.getTorboxGridCrossAxisCount();
+    if (mounted) {
+      setState(() {
+        _isGridView = isGrid;
+        _gridCrossAxisCount = crossAxis;
+      });
+    }
   }
 
   Future<void> _loadApiKeyAndTorrents() async {
@@ -7181,6 +7195,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
             TextButton(
               onPressed: () {
                 setState(() => _gridCrossAxisCount = tempCount);
+                StorageService.setTorboxGridCrossAxisCount(tempCount);
                 Navigator.of(ctx).pop();
               },
               style: TextButton.styleFrom(foregroundColor: const Color(0xFF6366F1)),
@@ -7208,6 +7223,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
         borderRadius: BorderRadius.circular(14),
         onTap: () => _navigateIntoTorrent(torrent),
         child: Stack(
+          alignment: Alignment.center,
           children: [
             Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -7286,6 +7302,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
         borderRadius: BorderRadius.circular(14),
         onTap: () => _navigateIntoWebDownload(webDownload),
         child: Stack(
+          alignment: Alignment.center,
           children: [
             Column(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -7380,6 +7397,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
           }
         },
         child: Stack(
+          alignment: Alignment.center,
           children: [
             Column(
               mainAxisAlignment: MainAxisAlignment.center,
