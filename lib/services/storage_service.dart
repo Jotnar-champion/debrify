@@ -255,6 +255,13 @@ class StorageService {
   static const String _remoteTvDeviceNameKey = 'remote_tv_device_name';
   static const String _remoteLastDeviceKey = 'remote_last_device';
 
+  // Grid view settings
+  static const String _rdGridViewEnabledKey = 'rd_grid_view_enabled';
+  static const String _rdGridCrossAxisCountKey = 'rd_grid_cross_axis_count';
+  static const String _torboxGridViewEnabledKey = 'torbox_grid_view_enabled';
+  static const String _torboxGridCrossAxisCountKey =
+      'torbox_grid_cross_axis_count';
+
   static const int _debrifyTvRandomStartPercentDefault = 20;
   static const int _debrifyTvRandomStartPercentMin = 10;
   static const int _debrifyTvRandomStartPercentMax = 90;
@@ -378,6 +385,48 @@ class StorageService {
   static Future<void> clearTorboxHiddenFromNav() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_torboxHiddenFromNavKey);
+  }
+
+  // Grid view settings — Real Debrid
+  static Future<bool> getRdGridViewEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_rdGridViewEnabledKey) ?? false;
+  }
+
+  static Future<void> setRdGridViewEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_rdGridViewEnabledKey, enabled);
+  }
+
+  static Future<double> getRdGridCrossAxisCount() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_rdGridCrossAxisCountKey) ?? 2.0;
+  }
+
+  static Future<void> setRdGridCrossAxisCount(double count) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_rdGridCrossAxisCountKey, count);
+  }
+
+  // Grid view settings — Torbox
+  static Future<bool> getTorboxGridViewEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_torboxGridViewEnabledKey) ?? false;
+  }
+
+  static Future<void> setTorboxGridViewEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_torboxGridViewEnabledKey, enabled);
+  }
+
+  static Future<double> getTorboxGridCrossAxisCount() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_torboxGridCrossAxisCountKey) ?? 2.0;
+  }
+
+  static Future<void> setTorboxGridCrossAxisCount(double count) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_torboxGridCrossAxisCountKey, count);
   }
 
   static Future<bool> isInitialSetupComplete() async {
