@@ -242,6 +242,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     }
 
     _loadApiKeyAndData();
+    _loadGridSettings();
     _torrentScrollController.addListener(_onTorrentScroll);
     _downloadScrollController.addListener(_onDownloadScroll);
     _folderScrollController.addListener(_updateScrollToTop);
@@ -484,8 +485,21 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
     }
   }
 
+  Future<void> _loadGridSettings() async {
+    final isGrid = await StorageService.getRdGridViewEnabled();
+    final crossAxis = await StorageService.getRdGridCrossAxisCount();
+    if (mounted) {
+      setState(() {
+        _isGridView = isGrid;
+        _gridCrossAxisCount = crossAxis;
+      });
+    }
+  }
+
   void _toggleGridView() {
-    setState(() => _isGridView = !_isGridView);
+    final newValue = !_isGridView;
+    setState(() => _isGridView = newValue);
+    StorageService.setRdGridViewEnabled(newValue);
   }
 
   Future<void> _loadApiKeyAndData() async {
@@ -3148,6 +3162,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
             TextButton(
               onPressed: () {
                 setState(() => _gridCrossAxisCount = tempCount);
+                StorageService.setRdGridCrossAxisCount(tempCount);
                 Navigator.of(ctx).pop();
               },
               style: TextButton.styleFrom(foregroundColor: const Color(0xFF6366F1)),
@@ -3195,6 +3210,7 @@ class _DebridDownloadsScreenState extends State<DebridDownloadsScreen> {
           }
         },
         child: Stack(
+          alignment: Alignment.center,
           children: [
             Column(
               mainAxisAlignment: MainAxisAlignment.center,
