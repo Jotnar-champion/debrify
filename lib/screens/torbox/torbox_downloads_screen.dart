@@ -5818,26 +5818,21 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
 
   /// Perform deep search across all files in current torrent
   void _performSearch(String query) {
-    // Get root folder node from navigation stack
-    if (_navigationStack.isEmpty || query.isEmpty) {
+    if (query.isEmpty || (_currentTorrent == null && _currentWebDownload == null)) {
       setState(() => _searchResults = []);
       return;
     }
 
-    final rootEntry = _navigationStack.first;
-    final rootNode = rootEntry.node;
-    if (rootNode == null) {
-      setState(() => _searchResults = []);
-      return;
-    }
+    // Rebuild the tree from the current torrent/web download files so search
+    // always has a valid root, regardless of navigation stack state.
+    final tree = TorboxFolderTreeBuilder.buildTree(_currentFiles);
 
     final lowerQuery = query.toLowerCase();
     final results = <_TorboxSearchResult>[];
 
     void searchNode(RDFileNode node, List<String> path) {
       if (!node.isFolder) {
-        if (FileUtils.isVideoFile(node.name) &&
-            node.name.toLowerCase().contains(lowerQuery)) {
+        if (node.name.toLowerCase().contains(lowerQuery)) {
           results.add(_TorboxSearchResult(node: node, path: path.join(' / ')));
         }
       } else {
@@ -5847,7 +5842,7 @@ class _TorboxDownloadsScreenState extends State<TorboxDownloadsScreen> {
       }
     }
 
-    for (final child in rootNode.children) {
+    for (final child in tree.children) {
       searchNode(child, []);
     }
 
